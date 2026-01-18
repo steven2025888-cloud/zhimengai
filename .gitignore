@@ -1,0 +1,64 @@
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.log
+
+# 虚拟环境
+.venv/
+venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 打包目录
+build/
+dist/
+*.spec
+
+# 压缩包
+*.zip
+*.rar
+*.7z
+*.tar
+*.gz
+
+# 备份文件
+*.bak
+*.old
+*.backup
+*~
+*.tmp
+
+# 播放器/音频缓存
+audio_cache/
+audio_temp/
+cache/
+
+# 浏览器数据
+ms-playwright/
+playwright_data/
+
+# 模型文件（很大）
+*.pth
+*.ckpt
+*.bin
+*.onnx
+models/
+
+# 日志与运行数据
+logs/
+run.log
+error.log
+
+# 配置私密信息
+.env
+config_local.py

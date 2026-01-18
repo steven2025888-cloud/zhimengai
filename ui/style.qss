@@ -1,0 +1,72 @@
+QWidget {
+  background: #0B1220;
+  color: #E6EEF8;
+  font-family: "Microsoft YaHei";
+  font-size: 13px;
+}
+
+QLineEdit, QTextEdit, QListWidget {
+  background: #0F1A2E;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 10px;
+  padding: 10px;
+  selection-background-color: rgba(43,127,255,0.35);
+}
+
+QTextEdit {
+  border-radius: 14px;
+  padding: 12px;
+}
+
+QPushButton {
+  background: rgba(43,127,255,0.18);
+  border: 1px solid rgba(43,127,255,0.35);
+  border-radius: 12px;
+  padding: 10px 14px;
+  font-weight: 600;
+}
+
+QPushButton:hover {
+  background: rgba(43,127,255,0.28);
+  border: 1px solid rgba(43,127,255,0.55);
+}
+
+QPushButton:pressed {
+  background: rgba(43,127,255,0.12);
+}
+
+QPushButton:disabled {
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.10);
+  color: rgba(255,255,255,0.35);
+}
+
+QLabel {
+  color: #E6EEF8;
+}
+
+QTabWidget::pane {
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 12px;
+  top: -1px;
+}
+
+QTabBar::tab {
+  background: #0F1A2E;
+  border: 1px solid rgba(255,255,255,0.06);
+  padding: 10px 14px;
+  border-top-left-radius: 10px;
+  border-top-right-radius: 10px;
+  margin-right: 6px;
+  color: #93A4B7;
+}
+
+QTabBar::tab:selected {
+  color: #E6EEF8;
+  background: rgba(43,127,255,0.18);
+  border: 1px solid rgba(43,127,255,0.35);
+}
+
+QSplitter::handle {
+  background: rgba(255,255,255,0.06);
+}

@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <style>
+        body {
+            font-family: Microsoft YaHei;
+            background-color: #0F1A2E;
+            color: #E6EEF8;
+            padding: 14px;
+            line-height: 1.8;
+        }
+        h1 {
+            color: #4DA3FF;
+            border-bottom: 1px solid #2B7FFF;
+            padding-bottom: 6px;
+        }
+        h2 {
+            color: #FFD36A;
+            margin-top: 18px;
+        }
+        .box {
+            border-left: 4px solid #2B7FFF;
+            background-color: #16223A;
+            padding: 10px;
+            margin: 10px 0;
+        }
+        .example {
+            background-color: #0B1220;
+            border: 1px solid #2B7FFF;
+            padding: 10px;
+            margin-top: 8px;
+            border-radius: 4px;
+        }
+        .must { color: #4DA3FF; font-weight: bold; }
+        .any { color: #7CFF7C; font-weight: bold; }
+        .deny { color: #FF6B6B; font-weight: bold; }
+        .result-ok { color: #7CFF7C; }
+        .result-no { color: #FF6B6B; }
+    </style>
+</head>
+
+<body>
+
+<h1>关键词匹配规则说明</h1>
+
+<h2>一、什么是「必含词」？</h2>
+<div class="box">
+    必含词 = 这个问题在问“谁 / 什么东西”。
+    只要用户的话里没有出现必含词，这一类问题就不会触发。
+</div>
+
+<div class="example">
+    例子：分类「炉膛」
+    必含词：炉膛、内胆
+    <br>
+    用户弹幕：
+    ① 炉膛多大？ → <span class="result-ok">命中</span>（包含“炉膛”）
+    <br>
+    ② 这个能装多少？ → <span class="result-no">不命中</span>（没说炉膛，也可能在问锅、灰、风机）
+</div>
+
+<h2>二、什么是「意图词」？</h2>
+<div class="box">
+    意图词 = 用户想问什么类型的问题（尺寸？材质？用法？价格？）。
+    用于区分：同一个对象，不同问题。
+</div>
+
+<div class="example">
+    分类：尺寸
+    <br>
+    必含词：炉膛
+    <br>
+    意图词：多大、尺寸、宽、高、多少
+    <br>
+    用户弹幕：
+    ① 炉膛多大？ → <span class="result-ok">命中必含词+意图，优先匹配</span>（必含词+意图都齐）
+    <br>
+    ② 炉膛怎么样？ → <span class="result-ok">只命中必含词</span>只有必含词，没有明确意图 → 进入“降级匹配”也会命中，但是优先级次于第一种
+    <br>
+    ③ 内胆厚不厚？ → <span class="result-no">无法命中</span>（（没有必含词,没有意图词，不会命中）
+</div>
+
+<h2>三、什么是「排除词」？</h2>
+<div class="box">
+    排除词 = 出现后立刻否定本分类，用来防止误判。
+</div>
+
+<div class="example">
+    分类：用不用电
+     <br>
+    必含词：电
+     <br>
+    排除词：电话、电商、电视
+    <br>
+    用户弹幕：
+     <br>
+    ① 这个用电吗？ → <span class="result-ok">命中</span>
+     <br>
+    ② 我电话打不通 → <span class="result-no">被排除</span>（虽然有“电”，但其实在说电话）
+</div>
+
+<h2>四、系统真正的匹配流程</h2>
+<div class="box">
+    第一优先级：
+    <span class="must">必含词</span> + <span class="any">意图词</span> 同时命中
+    → 精准触发对应讲解音频
+
+    如果没有任何分类命中意图词：
+    系统自动降级为：
+    只要命中 <span class="must">必含词</span> 就触发
+    （适配直播间口语、省略式提问）
+</div>
+
+<div class="example">
+    用户弹幕：
+    “这个炉膛行不行？”
+
+    分析：
+    ✔ 包含必含词：炉膛
+    ✘ 没有明确意图词（不是尺寸、不是材质、不是灰）
+
+    结果：
+    → 系统仍然触发「炉膛讲解」音频（降级命中）
+</div>
+
+<h2>五、总结一句话</h2>
+<div class="box">
+    必含词：你在问谁？
+    意图词：你想问什么？
+    排除词：哪些情况要强行排除？
+
+    系统规则：
+    先找“对象+意图”，
+    找不到意图时，只要对象对，也照样播报。
+</div>
+
+
+<h2>六、左侧分类与音频文件命名规则</h2>
+<div class="box">
+左侧每一个分类名称，就是对应音频文件的“前缀名”。
+系统会自动按「前缀 + 数字」的方式随机播放讲解音频。
+</div>
+
+<div class="example">
+例如你新建一个分类：<b>挡风圈</b><br><br>
+
+那么对应的音频文件应命名为：<br>
+挡风圈1.mp3、挡风圈2.mp3、挡风圈3.wav ……<br><br>
+
+系统工作方式：<br>
+当弹幕命中“挡风圈”这个分类时，
+会在所有以“挡风圈+数字”命名的音频中随机选一条播放。
+</div>
+
+
+</body>
+</html>
