@@ -10,6 +10,9 @@ __pycache__/
 venv/
 env/
 
+
+index-tts-main/
+
 # IDE
 .idea/
 .vscode/
