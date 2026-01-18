@@ -38,7 +38,7 @@ class AppState:
     license_key: str = ""          # 卡密
     machine_code: str = ""         # 设备指纹
     current_model_id: int | None = None  # 当前选择的声纹模型ID
-
+    enable_voice_report: bool = False  # ⏱ 自动报时开关（默认关闭）
 
 
 # ... 你的 AppState dataclass 定义不变

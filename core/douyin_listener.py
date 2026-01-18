@@ -66,8 +66,8 @@ class DouyinListener:
                 except Exception as e:
                     print("⚠️ 启动随机讲解失败：", e)
 
-            # ② 启动语音报时线程（只启动一次）
-            if not getattr(self.state, "report_thread_started", False):
+            # ② 启动语音报时线程（需开关打开）
+            if self.state.enable_voice_report and not getattr(self.state, "report_thread_started", False):
                 from audio.voice_reporter import voice_report_loop
                 import threading
 
@@ -79,7 +79,7 @@ class DouyinListener:
                 t.start()
 
                 self.state.report_thread_started = True
-                print("⏱ 已启动语音报时线程")
+                print("⏱ 已启动语音报时线程（开关已开启）")
 
     def _handle_comment_json(self, data: Dict[str, Any]):
         comments = data.get("data", {}).get("comment_infos", [])

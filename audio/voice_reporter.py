@@ -25,7 +25,6 @@ voice_client = VoiceApiClient(BASE_URL, app_state.license_key)
 
 # ================== 报时间隔持久化配置 ==================
 
-CONFIG_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), "report_config.json")
 REPORT_INTERVAL_MINUTES = 15  # 默认值
 
 
@@ -125,25 +124,23 @@ def download_audio(voice_url: str) -> str:
 
 
 
+from core.runtime_state import load_runtime_state, save_runtime_state
+
 def load_report_interval():
     global REPORT_INTERVAL_MINUTES
-    try:
-        if os.path.exists(CONFIG_FILE):
-            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                REPORT_INTERVAL_MINUTES = int(data.get("interval", 15))
-                print(f"⏱ 已加载报时间隔配置：{REPORT_INTERVAL_MINUTES} 分钟")
-    except Exception as e:
-        print("⚠ 读取报时间隔配置失败，使用默认15分钟：", e)
-        REPORT_INTERVAL_MINUTES = 15
+    state = load_runtime_state()
+    REPORT_INTERVAL_MINUTES = int(state.get("report_interval_minutes", 15))
+    print(f"⏱ 已加载报时间隔：{REPORT_INTERVAL_MINUTES} 分钟")
 
 def save_report_interval(minutes: int):
-    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-        json.dump({"interval": minutes}, f, ensure_ascii=False, indent=2)
-    print(f"💾 已保存报时间隔配置：{minutes} 分钟")
+    state = load_runtime_state()
+    state["report_interval_minutes"] = minutes
+    save_runtime_state(state)
+    print(f"💾 已保存报时间隔：{minutes} 分钟")
 
-# 模块加载时自动读取
+
 load_report_interval()
+
 
 # ========================================================
 

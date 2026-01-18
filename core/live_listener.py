@@ -317,16 +317,19 @@ class LiveListener:
                     print("⚠️ 启动随机讲解失败：", e)
 
             # 启动报时线程（只启动一次）
-            if not getattr(self.state, "report_thread_started", False):
+            if self.state.enable_voice_report and not getattr(self.state, "report_thread_started", False):
                 from audio.voice_reporter import voice_report_loop
                 import threading
+
                 threading.Thread(
                     target=voice_report_loop,
                     args=(self.state, self.state.audio_dispatcher),
                     daemon=True
                 ).start()
+
                 self.state.report_thread_started = True
-                print("⏱ 视频号语音报时线程已启动")
+                print("⏱ 视频号语音报时线程已启动（开关已开启）")
+
 
         # 离开直播
         elif not should and self.state.is_listening:

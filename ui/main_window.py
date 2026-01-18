@@ -49,6 +49,14 @@ class MainWindow(QWidget):
     def __init__(self, resource_path_func, expire_time: str | None = None, license_key: str = ""):
         super().__init__()
 
+        from core.runtime_state import load_runtime_state
+        from core.state import app_state
+
+        runtime = load_runtime_state()
+
+        app_state.enable_voice_report = runtime["enable_voice_report"]
+
+
         app_state.license_key = license_key
         app_state.machine_code = get_machine_code()
 
@@ -101,11 +109,24 @@ class MainWindow(QWidget):
         self.btn_reorder_audio = QPushButton("🧹 排序音频")
         self.btn_copy_audio = QPushButton("📁 复制音频")
         self.btn_check_audio = QPushButton("🔍 检查音频")
-        self.btn_report_interval = QPushButton(f"⏱ 报时{voice_reporter.REPORT_INTERVAL_MINUTES}分")
-        self.btn_clear_log = QPushButton("🧹 清空日志")
 
+        self.btn_report_interval = QPushButton(f"⏱ 报时{voice_reporter.REPORT_INTERVAL_MINUTES}分")
+
+        self.btn_report_switch = QPushButton()
+        self.btn_report_switch.setCheckable(True)  # ✅关键：必须可切换
+        self.btn_report_switch.setChecked(bool(app_state.enable_voice_report))
+
+        # ✅根据状态刷新按钮文案
+        self.btn_report_switch.setText("⏱ 报时：开启" if app_state.enable_voice_report else "⏱ 报时：关闭")
+        self.btn_report_switch.setFixedSize(110, 60)
+
+
+        self.btn_clear_log = QPushButton("🧹 清空日志")
         self.btn_split_audio = QPushButton("✂️ 自动裁剪")
         self.btn_split_audio.setFixedSize(110, 60)
+
+
+
 
 
         self.btn_clear_log.setFixedHeight(42)
@@ -139,7 +160,10 @@ class MainWindow(QWidget):
         row.addWidget(self.btn_copy_audio)
         row.addWidget(self.btn_check_audio)
         row.addWidget(self.btn_report_interval)
+        row.addWidget(self.btn_report_switch)
+
         row.addWidget(self.btn_split_audio)
+
         row.addStretch(1)
         root.addLayout(row)
 
@@ -187,9 +211,31 @@ class MainWindow(QWidget):
         self.btn_reorder_audio.clicked.connect(self.handle_reorder_audio)
         self.btn_copy_audio.clicked.connect(self.handle_copy_audio)
         self.btn_check_audio.clicked.connect(self.handle_check_audio)
+
         self.btn_report_interval.clicked.connect(self.set_report_interval)
+        self.btn_report_switch.clicked.connect(self.toggle_report_switch)
+
         self.btn_clear_log.clicked.connect(self.clear_log)
         self.btn_split_audio.clicked.connect(self.handle_split_audio)
+
+    def toggle_report_switch(self):
+        from core.state import app_state
+        from core.runtime_state import save_runtime_state, load_runtime_state
+
+        enabled = self.btn_report_switch.isChecked()
+        app_state.enable_voice_report = enabled
+
+        # 保存
+        state = load_runtime_state()
+        state["enable_voice_report"] = enabled
+        save_runtime_state(state)
+
+        if enabled:
+            self.btn_report_switch.setText("⏱ 报时：开启")
+            print("⏱ 自动语音报时：已开启（将进行语音合成）")
+        else:
+            self.btn_report_switch.setText("⏱ 报时：关闭")
+            print("⏱ 自动语音报时：已关闭（不再合成语音）")
 
     def handle_split_audio(self):
         from PySide6.QtWidgets import QFileDialog

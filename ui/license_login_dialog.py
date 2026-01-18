@@ -18,7 +18,7 @@ from api.voice_api import LicenseApi
 from config import BASE_URL
 
 
-SAVE_FILE = os.path.join(os.path.expanduser("~"), ".ai_live_tool", "license.json")
+from core.runtime_state import load_runtime_state, save_runtime_state
 
 
 # ------------------ 旋转加载动画 ------------------
@@ -297,18 +297,15 @@ class LicenseLoginDialog(QDialog):
         self.load_saved_key()
 
     def load_saved_key(self):
-        if os.path.exists(SAVE_FILE):
-            try:
-                with open(SAVE_FILE, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    self.edit.setText(data.get("license_key", ""))
-                    self.expire_time = data.get("expire_time")
-            except:
-                pass
+        state = load_runtime_state()
+        self.edit.setText(state.get("license_key", ""))
+        self.expire_time = state.get("expire_time")
 
     def save_key(self, key: str, expire_time: str | None):
-        with open(SAVE_FILE, "w", encoding="utf-8") as f:
-            json.dump({"license_key": key, "expire_time": expire_time}, f, ensure_ascii=False)
+        state = load_runtime_state()
+        state["license_key"] = key
+        state["expire_time"] = expire_time
+        save_runtime_state(state)
 
     def do_login(self):
         key = self.edit.text().strip()
