@@ -174,8 +174,13 @@ class MainWindow(QWidget):
         # 日志重定向
         self.log_stream = LogStream()
         self.log_stream.text_written.connect(self.append_log)
-        sys.stdout = self.log_stream
-        sys.stderr = self.log_stream
+        from logger_bootstrap import SafeTee, log_fp
+
+        self.log_stream = LogStream()
+        self.log_stream.text_written.connect(self.append_log)
+
+        sys.stdout = SafeTee(self.log_stream, log_fp)
+        sys.stderr = SafeTee(self.log_stream, log_fp)
 
         # 事件绑定
         self.btn_start.clicked.connect(self.start_system)

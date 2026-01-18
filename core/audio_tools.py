@@ -121,7 +121,7 @@ def smart_split_audio_to_dir(input_file, output_dir, min_len=30, max_len=300, pr
         part = audio[start * 1000:end * 1000]
         part.export(out_path, format="mp3")
         output_files.append(out_path)
-        print(f"✂️ 生成：{out_name}  时长 {int(end-start)} 秒")
+        print(f"✂️ AI裁剪：{out_name}  时长 {int(end-start)} 秒")
 
     print(f"✅ 裁剪完成，共生成 {len(output_files)} 段，输出目录：{output_dir}")
     return output_files
