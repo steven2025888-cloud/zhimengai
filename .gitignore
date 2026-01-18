@@ -27,6 +27,9 @@ build/
 dist/
 *.spec
 
+
+
+
 # 压缩包
 *.zip
 *.rar
@@ -43,6 +46,8 @@ dist/
 
 # 播放器/音频缓存
 audio_cache/
+audio_assets/
+
 audio_temp/
 cache/
 

@@ -25,6 +25,11 @@ from api.voice_api import get_machine_code
 from config import (
     BASE_URL
 )
+from PySide6.QtWidgets import QApplication
+
+import sys
+import functools
+print = functools.partial(print, flush=True)
 
 
 
@@ -32,7 +37,9 @@ class LogStream(QObject):
     text_written = Signal(str)
 
     def write(self, text):
-        self.text_written.emit(str(text))
+        if text:
+            self.text_written.emit(str(text))
+            QApplication.processEvents()  # 🔥 关键：强制刷新UI事件队列
 
     def flush(self):
         pass
@@ -195,19 +202,22 @@ class MainWindow(QWidget):
             return
 
         # 输入最大时长
-        max_sec, ok = QInputDialog.getInt(
+        max_min, ok = QInputDialog.getDouble(
             self,
-            "设置最长时长",
-            "请输入每段最长秒数（最短固定 30 秒）：",
-            300,
-            30,
-            3600
+            "设置最长时长（分钟）",
+            "请输入每段最长分钟数（最短 0.5 分钟）：",
+            3.0,
+            0.5,
+            60.0,
+            1
         )
         if not ok:
             return
 
-        print(f"✂️ 开始裁剪：{file_path}")
-        print(f"⏱ 最短 30 秒，最长 {max_sec} 秒")
+        max_sec = int(max_min * 60)
+
+        print(f"✂️ AI开始裁剪：{file_path}")
+        print(f"⏱ 最短 0.5 分钟，最长 {max_min} 分钟")
         print(f"📁 输出目录：{AUDIO_BASE_DIR}")
 
         try:
@@ -219,7 +229,7 @@ class MainWindow(QWidget):
                 prefix="讲解"
             )
 
-            print("✅ 裁剪完成，生成文件：")
+            print("✅ AI裁剪完成，生成文件：")
             for f in files:
                 print("   ", os.path.basename(f))
 
@@ -240,6 +250,7 @@ class MainWindow(QWidget):
         self.console.moveCursor(QTextCursor.End)
         self.console.insertPlainText(text)
         self.console.ensureCursorVisible()
+        self.console.repaint()  # 🔥 立刻重绘
 
     def start_system(self):
         if self._main_started:

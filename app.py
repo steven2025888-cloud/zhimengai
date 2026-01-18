@@ -11,7 +11,7 @@ from ui.main_window import MainWindow
 from ui.license_login_dialog import LicenseLoginDialog
 from core.updater import force_check_update_and_exit_if_needed
 from config import AUDIO_BASE_DIR
-
+import logger_bootstrap
 
 # PyInstaller Playwright
 if hasattr(sys, "_MEIPASS"):
@@ -48,6 +48,7 @@ def clear_audio_cache():
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
+
 
     # 启动第一时间强制检查更新
     force_check_update_and_exit_if_needed()
