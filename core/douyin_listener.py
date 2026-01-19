@@ -48,7 +48,7 @@ class DouyinListener:
 
     def _update_listen_state(self, page: Page, reason: str = ""):
         url = _get_real_url(page)
-        should = url.startswith("https://buyin.jinritemai.com/dashboard/live/control")
+        should = url.startswith(DOUYIN_DASHBOARD_URL)
 
         if should and not self.state.dy_is_listening:
             self.state.dy_is_listening = True

@@ -28,32 +28,49 @@ voice_client = VoiceApiClient(BASE_URL, app_state.license_key)
 REPORT_INTERVAL_MINUTES = 15  # 默认值
 
 
-
 def call_cloud_tts(text: str, model_id: int, timeout: int = 300) -> str:
+    # 同步授权
+    from api.voice_api import VoiceApiClient
+    client = VoiceApiClient(BASE_URL, app_state.license_key)
+    client.machine_code = app_state.machine_code
+
+    if not client.license_key:
+        raise RuntimeError("缺少授权信息：license_key 为空")
+
     if not model_id or int(model_id) <= 0:
-        raise RuntimeError("未设置音色模型（model_id 不合法），请先添加/选择音色模型")
+        raise RuntimeError("未设置音色模型，请先添加并设为默认")
 
+    # 🔍 打印要合成的时间文本
+    print(f"🕒 准备生成报时语音：{text}（model_id={model_id}）")
 
-    voice_client.license_key = app_state.license_key
-    voice_client.machine_code = app_state.machine_code
+    # 🔒 校验云端模型存在
+    resp_models = client.list_models()
+    if resp_models.get("code") != 0:
+        raise RuntimeError(resp_models.get("msg", "获取模型列表失败"))
 
-    # 1. 创建任务
-    resp = voice_client.tts(model_id=model_id, text=text)
+    server_ids = {int(m["id"]) for m in resp_models.get("data", [])}
+    if int(model_id) not in server_ids:
+        app_state.current_model_id = None
+        raise RuntimeError("默认音色模型已被删除或不存在，请重新配置")
+
+    print("✅ 云端音色模型校验通过")
+
+    # 1. 创建TTS任务
+    resp = client.tts(model_id=int(model_id), text=text)
     if resp.get("code") != 0:
         raise RuntimeError(resp.get("msg", "创建TTS任务失败"))
 
     data = resp["data"]
     task_id = data.get("taskId") or data.get("task_id")
-    if not task_id:
-        raise RuntimeError(f"未返回 taskId: {resp}")
+    print(f"📨 TTS任务已创建：task_id={task_id}")
 
-    # 2. 轮询
+    # 2. 轮询结果
     start = time.time()
     interval = 0.8
     voice_url = None
 
     while True:
-        result = voice_client.tts_result(task_id)
+        result = client.tts_result(task_id)
         if result.get("code") != 0:
             raise RuntimeError(result.get("msg", "查询TTS结果失败"))
 
@@ -62,6 +79,7 @@ def call_cloud_tts(text: str, model_id: int, timeout: int = 300) -> str:
 
         if status == 2:
             voice_url = rdata.get("voiceUrl") or rdata.get("voice_url")
+            print("🎧 语音生成完成，云端地址：", voice_url)
             break
         elif status == 3:
             raise RuntimeError("语音合成失败")
@@ -69,19 +87,19 @@ def call_cloud_tts(text: str, model_id: int, timeout: int = 300) -> str:
             if time.time() - start > timeout:
                 raise RuntimeError(f"TTS 超时仍未生成完成（等待 {timeout}s）")
             time.sleep(interval)
-            # 逐步放慢轮询，减轻接口压力
             interval = min(interval + 0.3, 3.0)
-
 
     if not voice_url:
         raise RuntimeError("云TTS未返回音频地址")
 
-
-
-    # 返回给播放器的是你自己服务器的播放代理地址
     proxy_url = f"{BASE_URL}/api/voice/tts/play?voice_url={quote(voice_url)}"
     local_file = download_voice_from_proxy(proxy_url)
+
+    print("💾 报时音频已保存到本地：", local_file)
+
     return local_file
+
+
 
 
 
@@ -189,41 +207,37 @@ def schedule_report_after(minutes: int, state: AppState, dispatcher: AudioDispat
 def voice_report_loop(state: AppState, dispatcher: AudioDispatcher):
     tz = ZoneInfo("Asia/Shanghai")
 
-    target = datetime.datetime.now(tz) + datetime.timedelta(minutes=REPORT_INTERVAL_MINUTES)
-    target = target.replace(second=0, microsecond=0)
-
-    pending_wav = None
-    RETRY_INTERVAL_SEC = 15
-
     while True:
+        # 🔒 总开关关闭时，直接休眠，不做任何生成
+        if not state.enable_voice_report:
+            time.sleep(1)
+            continue
+
         if not state.live_ready:
             time.sleep(1)
             continue
-        now = datetime.datetime.now(tz)
 
-        if now < target and pending_wav is None:
-            text = get_report_text(target)
-            print(f"🕒 目标报时点（{REPORT_INTERVAL_MINUTES}分钟制）：", target.strftime("%H:%M"))
-            try:
-                pending_wav = call_cloud_tts(text, app_state.current_model_id)
+        target = datetime.datetime.now(tz) + datetime.timedelta(minutes=REPORT_INTERVAL_MINUTES)
+        target = target.replace(second=0, microsecond=0)
+        pending_wav = None
 
-                print("✅ 报时语音已生成：", pending_wav)
-            except Exception as e:
-                print("❌ TTS 生成失败，重试中：", e)
-                time.sleep(RETRY_INTERVAL_SEC)
-                continue
+        while state.enable_voice_report:
+            now = datetime.datetime.now(tz)
 
-        if now >= target:
-            if pending_wav and state.enabled and state.live_ready:
-                print("⏰ 到点播放报时：", pending_wav)
-                dispatcher.push_report_resume(pending_wav)
+            if pending_wav is None and now < target:
+                try:
+                    text = get_report_text(target)
+                    pending_wav = call_cloud_tts(text, app_state.current_model_id)
+                except Exception as e:
+                    print("❌ 报时TTS失败：", e)
+                    time.sleep(10)
+                    continue
 
-            else:
-                print(f"⏭ 到点仍未生成成功，顺延下一个 {REPORT_INTERVAL_MINUTES} 分钟")
+            if now >= target:
+                if pending_wav and state.enable_voice_report and state.live_ready:
+                    dispatcher.push_report_resume(pending_wav)
 
-            pending_wav = None
-            target = target + datetime.timedelta(minutes=REPORT_INTERVAL_MINUTES)
-            target = target.replace(second=0, microsecond=0)
-            continue
+                break
 
-        time.sleep(0.5)
+            time.sleep(0.5)
+

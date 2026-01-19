@@ -3,10 +3,28 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QListWidget, QListWidgetItem, QFileDialog, QMessageBox
 )
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtGui import QFont
 from api.voice_api import VoiceApiClient
 from core.state import app_state
+
+
+class VoiceModelLoader(QThread):
+    finished = Signal(list)
+
+    def __init__(self, api: VoiceApiClient):
+        super().__init__()
+        self.api = api
+
+    def run(self):
+        try:
+            resp = self.api.list_models()
+            if isinstance(resp, dict) and resp.get("code") == 0:
+                self.finished.emit(resp.get("data", []))
+            else:
+                self.finished.emit([])
+        except Exception:
+            self.finished.emit([])
 
 
 class VoiceModelPanel(QWidget):
@@ -14,10 +32,11 @@ class VoiceModelPanel(QWidget):
         super().__init__(parent)
         self.api = VoiceApiClient(base_url, license_key)
         self.current_model = None
+        self.loader = None
 
         self.setMinimumWidth(360)
         self.init_ui()
-        self.load_models()
+        self.load_models_async()
 
     def init_ui(self):
         layout = QVBoxLayout(self)
@@ -27,7 +46,7 @@ class VoiceModelPanel(QWidget):
         title.setFont(QFont("微软雅黑", 14, QFont.Bold))
         title.setAlignment(Qt.AlignLeft)
 
-        self.btn_upload = QPushButton("➕ 上传新音色模型")
+        self.btn_upload = QPushButton("➕ 上传新音色模型（MP3 / WAV）")
         self.btn_upload.setFixedHeight(36)
         self.btn_upload.clicked.connect(self.upload_model)
 
@@ -50,83 +69,87 @@ class VoiceModelPanel(QWidget):
         layout.addWidget(self.list, 1)
         layout.addLayout(btn_row)
 
-        self.setStyleSheet("""
-        QListWidget {
-            background-color: #0F172A;
-            border-radius: 10px;
-            padding: 6px;
-        }
-        QListWidget::item {
-            background-color: #1E293B;
-            border-radius: 8px;
-            padding: 10px;
-            margin: 4px;
-            color: white;
-        }
-        QListWidget::item:selected {
-            background-color: #2563EB;
-        }
-        QPushButton {
-            background-color: #1E40AF;
-            color: white;
-            border-radius: 6px;
-            padding: 6px 12px;
-        }
-        QPushButton:hover {
-            background-color: #3B82F6;
-        }
-        """)
+    # ================= 云端异步加载 =================
 
-    def load_models(self):
+    def load_models_async(self):
         self.list.clear()
-        resp = self.api.list_models()
+        self.current_model = None
+        self.btn_default.setEnabled(False)
+        self.btn_delete.setEnabled(False)
 
-        if not isinstance(resp, dict) or resp.get("code", -1) != 0:
-            QMessageBox.warning(self, "错误", resp.get("msg", f"接口异常返回：{resp}"))
+        self.loader = VoiceModelLoader(self.api)
+        self.loader.finished.connect(self.render_models)
+        self.loader.start()
+
+    def render_models(self, models: list):
+        self.list.clear()
+        self.current_model = None
+        app_state.current_model_id = None
+
+        if not models:
             return
 
-        models = resp["data"]
         default_item = None
 
         for m in models:
-            text = f"{'⭐ ' if m['is_default'] else ''}{m['name']}  ({m['describe'] or '无描述'})"
+            text = f"{'⭐ ' if m.get('is_default') else ''}{m['name']}"
             item = QListWidgetItem(text)
             item.setData(Qt.UserRole, m)
             self.list.addItem(item)
 
-            # 找默认模型
             if m.get("is_default"):
                 default_item = item
                 app_state.current_model_id = m["id"]
 
-        # 如果没有默认模型，自动选第一个
-        if not default_item and models:
-            first = models[0]
-            app_state.current_model_id = first["id"]
-            self.list.setCurrentRow(0)
-            self.current_model = first
-        elif default_item:
+        if default_item:
             self.list.setCurrentItem(default_item)
             self.current_model = default_item.data(Qt.UserRole)
+            self.btn_default.setEnabled(True)
+            self.btn_delete.setEnabled(True)
+
+    # ================= 操作逻辑 =================
 
     def upload_model(self):
-        file_path, _ = QFileDialog.getOpenFileName(self, "选择音色文件", "", "WAV Files (*.wav)")
-        if not file_path:
+        files, _ = QFileDialog.getOpenFileNames(
+            self,
+            "选择音色模型文件（支持 MP3 / WAV）",
+            "",
+            "音频文件 (*.mp3 *.wav)"
+        )
+        if not files:
             return
 
-        name = os.path.basename(file_path).replace(".wav", "")
-        resp = self.api.upload_model(file_path, name, "桌面端上传模型")
+        valid_ext = (".mp3", ".wav")
 
-        if not isinstance(resp, dict) or resp.get("code", -1) != 0:
-            QMessageBox.warning(self, "上传失败", resp.get("msg", f"接口返回异常：{resp}"))
-            return
+        for file_path in files:
+            if not file_path.lower().endswith(valid_ext):
+                QMessageBox.warning(self, "格式错误", "仅支持上传 MP3 或 WAV 格式音色模型")
+                return
 
-        QMessageBox.information(self, "成功", "声纹模型创建成功！")
-        self.load_models()
+        success = 0
+        fail = []
+
+        for file_path in files:
+            name = os.path.splitext(os.path.basename(file_path))[0]
+            resp = self.api.upload_model(file_path, name, "桌面端上传模型")
+
+            if not isinstance(resp, dict) or resp.get("code", -1) != 0:
+                fail.append(name)
+            else:
+                success += 1
+
+        if success:
+            QMessageBox.information(self, "上传完成", f"成功上传 {success} 个音色模型")
+
+        if fail:
+            QMessageBox.warning(self, "部分失败", "以下模型上传失败：\n" + "\n".join(fail))
+
+        self.load_models_async()
 
     def on_select_model(self, item: QListWidgetItem):
         self.current_model = item.data(Qt.UserRole)
-        app_state.current_model_id = self.current_model["id"]
+        self.btn_default.setEnabled(True)
+        self.btn_delete.setEnabled(True)
 
     def set_default(self):
         if not self.current_model:
@@ -134,10 +157,9 @@ class VoiceModelPanel(QWidget):
             return
 
         resp = self.api.set_default(self.current_model["id"])
-        if resp["code"] == 0:
+        if resp.get("code") == 0:
             QMessageBox.information(self, "成功", "已设为默认模型")
-            app_state.current_model_id = self.current_model["id"]
-            self.load_models()
+            self.load_models_async()
         else:
             QMessageBox.warning(self, "失败", resp.get("msg", "设置失败"))
 
@@ -149,10 +171,15 @@ class VoiceModelPanel(QWidget):
         if QMessageBox.question(self, "确认删除", "确定要删除该音色模型吗？") != QMessageBox.Yes:
             return
 
-        resp = self.api.delete_model(self.current_model["id"])
-        if resp["code"] == 0:
+        deleted_id = self.current_model["id"]
+        resp = self.api.delete_model(deleted_id)
+
+        if resp.get("code") == 0:
             QMessageBox.information(self, "成功", "模型已删除")
-            app_state.current_model_id = None
-            self.load_models()
+
+            if app_state.current_model_id == deleted_id:
+                app_state.current_model_id = None
+
+            self.load_models_async()
         else:
             QMessageBox.warning(self, "失败", resp.get("msg", "删除失败"))

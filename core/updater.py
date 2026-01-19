@@ -3,9 +3,10 @@ import webbrowser
 import requests
 from PySide6.QtWidgets import QMessageBox
 
-UPDATE_API = "https://api.zhimengai.xyz/api/update/check"
-CURRENT_VERSION = "1.0.3"
 
+from config import (
+    UPDATE_API,CURRENT_VERSION
+)
 
 def force_check_update_and_exit_if_needed():
     print("🔍 启动检查更新...")

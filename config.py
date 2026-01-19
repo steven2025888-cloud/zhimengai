@@ -3,10 +3,15 @@ import os
 from pathlib import Path
 import sys
 
-BASE_URL = "https://api.zhimengai.xyz"
+
+zhandian="api.zhimengai.xyz"
+BASE_URL = "https://"+zhandian
+UPDATE_API = BASE_URL + "/api/update/check"
+
+CURRENT_VERSION = "1.0.4"
 
 # ================== WS 配置 ==================
-WS_URL = "wss://api.zhimengai.xyz/live"
+WS_URL = "wss://"+zhandian+"/live"
 
 # ================== Playwright & 微信视频号 ==================
 LOGIN_URL = "https://channels.weixin.qq.com/login.html"
@@ -30,6 +35,7 @@ HOME_URL = "https://channels.weixin.qq.com/platform/live/home"
 # config.py
 DOUYIN_PROFILE_DIR = "./profiles/douyin"   # 每个用户可再细分
 DOUYIN_LOGIN_URL = "https://buyin.jinritemai.com/mpa/account/login"
+# DOUYIN_DASHBOARD_URL = "https://buyin.jinritemai.com/mpa/account/login"
 DOUYIN_DASHBOARD_URL = "https://buyin.jinritemai.com/dashboard/live/control"
 DOUYIN_API_KEYWORD = "/api/anchor/comment/info"
 DOUYIN_STATE_FILE = "douyin_state.json"

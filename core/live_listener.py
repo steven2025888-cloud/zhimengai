@@ -398,6 +398,11 @@ class LiveListener:
 
             if t == 1:
                 print(f"💬 弹幕｜{nickname}：{content}")
+                # 📣 弹幕自动回复总开关
+                if not self.state.enable_danmaku_reply:
+                    continue  # 或 continue，看你是否还要走音频逻辑
+
+
                 # ✅把“自动回复”从写死关键词，改为：由 on_danmaku（关键词命中逻辑）返回回复文本
                 ret = None
                 try:
@@ -407,8 +412,16 @@ class LiveListener:
 
                 # ✅兼容：上层不 return，但把结果塞到 state 里
                 reply_text = ret if isinstance(ret, str) else getattr(self.state, "pending_auto_reply_text", None)
+
+                # 🔥 总开关控制
+                if not self.state.enable_auto_reply:
+                    if isinstance(reply_text, str) and reply_text.strip():
+                        print("💤 自动回复已关闭，本次仅命中关键词，不发送文字回复")
+                    continue  # ❗ 只跳过当前这条弹幕，不退出整个监听函数
+
                 if isinstance(reply_text, str) and reply_text.strip():
                     self._auto_reply_by_text(m, reply_text)
+
                     if hasattr(self.state, "pending_auto_reply_text"):
                         self.state.pending_auto_reply_text = None
 

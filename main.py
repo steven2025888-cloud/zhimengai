@@ -1,7 +1,4 @@
-import json
-import threading
 import time
-import random
 
 from config import (
     PREFIX_RANDOM, PREFIX_SIZE,
@@ -20,11 +17,13 @@ from core.douyin_listener import DouyinListener
 
 from PySide6.QtWidgets import QApplication, QDialog
 from ui.license_login_dialog import LicenseLoginDialog
-
-
 import sys
 import threading
 from core.state import app_state
+
+from audio.folder_order_manager import FolderOrderManager
+folder_manager = FolderOrderManager()
+
 
 def main(license_key: str):
 
@@ -86,12 +85,6 @@ def main(license_key: str):
     ws = WSClient(url=WS_URL, license_key=license_key, on_message=on_ws_message)
     ws.start()
 
-    # ===== 报时线程 =====
-    threading.Thread(
-        target=voice_report_loop,
-        args=(state, dispatcher),
-        daemon=True
-    ).start()
 
     # ===== 关键词匹配 =====
     def _pick_reply_text(cfg: dict) -> str:
@@ -202,8 +195,9 @@ def main(license_key: str):
         prefix, reply_text = hit_qa_question(content)
         if prefix:
             try:
-                wav = pick_by_prefix(prefix)
-                dispatcher.push_size(wav)
+                wav = folder_manager.pick_next_audio()
+                if wav:
+                    dispatcher.push_random(wav)
             except Exception as e:
                 print(f"{prefix} 音频触发异常：", e)
 
@@ -221,8 +215,9 @@ def main(license_key: str):
         while True:
             try:
                 if state.live_ready and not dispatcher.current_playing and dispatcher.q.empty():
-                    wav = pick_by_prefix(PREFIX_RANDOM)
-                    dispatcher.push_random(wav)
+                    wav = folder_manager.pick_next_audio()
+                    if wav:
+                        dispatcher.push_random(wav)
             except Exception as e:
                 print("随机讲解异常：", e)
 

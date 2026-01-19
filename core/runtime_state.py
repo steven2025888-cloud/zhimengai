@@ -5,8 +5,12 @@ STATE_FILE = "runtime_state.json"
 
 DEFAULT_STATE = {
     "enable_voice_report": False,
-    "report_interval_minutes": 15
+    "report_interval_minutes": 15,
+    "enable_danmaku_reply": True,   # 📣 弹幕自动回复总开关
+    "enable_auto_reply": True       # 💬 文本回复开关
 }
+
+
 
 def load_runtime_state():
     if not os.path.exists(STATE_FILE):
