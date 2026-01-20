@@ -48,6 +48,10 @@ dist/
 audio_cache/
 audio_assets/
 
+zhubo_audio/
+zhuli_audio/
+
+
 audio_temp/
 cache/
 

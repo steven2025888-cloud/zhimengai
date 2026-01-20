@@ -40,7 +40,7 @@ DOUYIN_API_KEYWORD = "/api/anchor/comment/info"
 
 
 # ================== 音频资源目录 ==================
-AUDIO_BASE_DIR = BASE_DIR / "audio_assets"
+AUDIO_BASE_DIR = BASE_DIR / "zhubo_audio"
 AUDIO_BASE_DIR.mkdir(parents=True, exist_ok=True)
 # ================== 助播音频目录 ==================
 ZHULI_AUDIO_DIR = BASE_DIR / "zhuli_audio"
