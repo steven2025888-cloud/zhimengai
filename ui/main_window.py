@@ -6,7 +6,8 @@ import functools
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QTextEdit,
     QPushButton, QSplitter, QMessageBox, QDialog, QApplication,
-    QListWidget, QListWidgetItem, QStackedWidget, QSpinBox, QComboBox
+    QListWidget, QListWidgetItem, QStackedWidget, QSpinBox, QComboBox,
+QCheckBox,  # ✅ 新增
 )
 from PySide6.QtCore import Qt, QObject, Signal
 from PySide6.QtGui import QTextCursor, QIcon
@@ -51,6 +52,36 @@ class MainWindow(QWidget):
         app_state.enable_auto_reply = bool(runtime.get("enable_auto_reply", False))
         app_state.enable_zhuli = bool(runtime.get("enable_zhuli", True))
         app_state.zhuli_mode = str(runtime.get("zhuli_mode", "A") or "A").upper()
+
+
+        # ===== 变量调节/音量/语速（随机间隔 + 幅度） =====
+        def _load_range(name: str, default_min: int, default_max: int):
+            mn = int(runtime.get(f"{name}_sec_min", default_min))
+            mx = int(runtime.get(f"{name}_sec_max", default_max))
+            if mn < 1: mn = 1
+            if mx < mn: mx = mn
+            return mn, mx
+
+        # 是否启用
+        app_state.var_pitch_enabled = bool(runtime.get("var_pitch_enabled", False))
+        app_state.var_volume_enabled = bool(runtime.get("var_volume_enabled", False))
+        app_state.var_speed_enabled = bool(runtime.get("var_speed_enabled", False))
+
+        # 随机间隔（秒）
+        app_state.var_pitch_sec_min, app_state.var_pitch_sec_max = _load_range("var_pitch", 30, 40)
+        app_state.var_volume_sec_min, app_state.var_volume_sec_max = _load_range("var_volume", 50, 60)
+        app_state.var_speed_sec_min, app_state.var_speed_sec_max = _load_range("var_speed", 70, 80)
+
+        # 幅度档位（用字符串存，UI combobox 选择）
+        app_state.var_pitch_delta = str(runtime.get("var_pitch_delta", "-5~+5"))
+        app_state.var_volume_delta = str(runtime.get("var_volume_delta", "+0~+10"))
+        app_state.var_speed_delta = str(runtime.get("var_speed_delta", "+0~+10"))
+
+        # 应用对象：主播/助播/插播/音乐
+        app_state.var_apply_anchor = bool(runtime.get("var_apply_anchor", True))
+        app_state.var_apply_zhuli  = bool(runtime.get("var_apply_zhuli", True))
+
+
         if app_state.zhuli_mode not in ("A", "B"):
             app_state.zhuli_mode = "A"
 
@@ -115,12 +146,13 @@ class MainWindow(QWidget):
             "AI工作台",
             "关键词设置",
             "助播设置",
+            "音色模型",
+            "音频工具",
+
             "播控设置",
             "DPS设置",
             "回复弹窗",
-            "音频工具",
             "话术改写",
-            "音色模型",
             "自动切换",
             "评论管理",
             "使用介绍",
@@ -212,6 +244,180 @@ class MainWindow(QWidget):
 
         auto_card, auto_body = self._make_card("自动化控制")
 
+        # ===== 变量调节/音量/语速 卡片（新增）=====
+        var_card, var_body = self._make_card("变量调节/音量/语速")
+
+        def _set_enabled(widgets: list, enabled: bool):
+            for x in widgets:
+                x.setEnabled(bool(enabled))
+
+        def _delta_options():
+            # 你图里那种下拉：可按需扩充
+            return [
+                "-5~+5",
+                "-3~+3",
+                "-2~+2",
+                "-1~+1",
+                "+0~+5",
+                "+0~+10",
+                "+50~+60",
+
+            ]
+
+        def _make_var_block(title: str, key_prefix: str,
+                            enabled_attr: str,
+                            sec_min_attr: str, sec_max_attr: str,
+                            delta_attr: str,
+                            default_min: int, default_max: int,
+                            default_delta: str):
+
+
+            wrap = QWidget()
+            v = QVBoxLayout(wrap)
+            v.setContentsMargins(10, 8, 10, 8)
+            v.setSpacing(6)
+
+            # 第一行：checkbox + 随机 min-max 秒
+            row1 = QWidget()
+            h1 = QHBoxLayout(row1)
+            h1.setContentsMargins(0, 0, 0, 0)
+            h1.setSpacing(10)
+
+            cb = QCheckBox(title)
+            cb.setChecked(bool(getattr(app_state, enabled_attr, False)))
+
+            lab_rand = QLabel("随机")
+            sp_min = QSpinBox()
+            sp_min.setRange(1, 3600)
+            sp_min.setValue(int(getattr(app_state, sec_min_attr, default_min)))
+            sp_min.setFixedWidth(70)
+
+            lab_dash = QLabel("-")
+            sp_max = QSpinBox()
+            sp_max.setRange(1, 3600)
+            sp_max.setValue(int(getattr(app_state, sec_max_attr, default_max)))
+            sp_max.setFixedWidth(70)
+
+            lab_sec = QLabel("秒")
+
+            h1.addWidget(cb)
+            h1.addWidget(lab_rand)
+            h1.addWidget(sp_min)
+            h1.addWidget(lab_dash)
+            h1.addWidget(sp_max)
+            h1.addWidget(lab_sec)
+            h1.addStretch(1)
+
+            # 第二行：下拉幅度
+            row2 = QWidget()
+            h2 = QHBoxLayout(row2)
+            h2.setContentsMargins(0, 0, 0, 0)
+            h2.setSpacing(10)
+
+            cmb = QComboBox()
+            for opt in _delta_options():
+                cmb.addItem(f"设定值基础上 {opt}", opt)
+
+            cur = str(getattr(app_state, delta_attr, default_delta) or default_delta)
+            idx = cmb.findData(cur)
+            cmb.setCurrentIndex(idx if idx >= 0 else 0)
+
+            h2.addWidget(cmb, 1)
+
+
+            sp_min.setFixedHeight(28)
+            sp_max.setFixedHeight(28)
+            cmb.setFixedHeight(30)
+
+
+            v.addWidget(row1)
+            v.addWidget(row2)
+
+            wrap.setObjectName("VarBlock")
+            cb.setObjectName("VarCheck")
+            sp_min.setObjectName("VarSpin")
+            sp_max.setObjectName("VarSpin")
+            cmb.setObjectName("VarCombo")
+
+            # --- 事件 & 保存 ---
+            def _save_enabled(on: bool):
+                setattr(app_state, enabled_attr, bool(on))
+                # ✅ 直接保存到 runtime_state.json
+                self._save_runtime_flag(enabled_attr, bool(on))
+
+            def _save_secs():
+                mn = int(sp_min.value())
+                mx = int(sp_max.value())
+                if mx < mn:
+                    mx = mn
+                    sp_max.setValue(mx)
+                setattr(app_state, sec_min_attr, mn)
+                setattr(app_state, sec_max_attr, mx)
+                self._save_runtime_flag(f"{key_prefix}_sec_min", mn)
+                self._save_runtime_flag(f"{key_prefix}_sec_max", mx)
+
+            def _save_delta():
+                d = cmb.currentData()
+                setattr(app_state, delta_attr, d)
+                self._save_runtime_flag(f"{key_prefix}_delta", d)
+
+            cb.toggled.connect(_save_enabled)
+            sp_min.valueChanged.connect(lambda _=None: _save_secs())
+            sp_max.valueChanged.connect(lambda _=None: _save_secs())
+            cmb.currentIndexChanged.connect(lambda _=None: _save_delta())
+
+            return wrap
+
+        # 三组：变调/变音量/变语速
+        var_body.addWidget(_make_var_block(
+            "变调节", "var_pitch",
+            "var_pitch_enabled",
+            "var_pitch_sec_min", "var_pitch_sec_max",
+            "var_pitch_delta",
+            30, 40, "-5~+5"
+        ))
+        var_body.addWidget(_make_var_block(
+            "变音量", "var_volume",
+            "var_volume_enabled",
+            "var_volume_sec_min", "var_volume_sec_max",
+            "var_volume_delta",
+            50, 60, "+0~+10"
+        ))
+        var_body.addWidget(_make_var_block(
+            "变语速", "var_speed",
+            "var_speed_enabled",
+            "var_speed_sec_min", "var_speed_sec_max",
+            "var_speed_delta",
+            70, 80, "+0~+10"
+        ))
+
+        # 底部应用对象（主播/助播/插播/音乐）
+        targets = QWidget()
+        targets.setObjectName("VarTargetsRow")
+        th = QHBoxLayout(targets)
+        th.setContentsMargins(8, 6, 8, 0)
+        th.setSpacing(18)
+
+        chk_anchor = QCheckBox("主播")
+        chk_zhuli = QCheckBox("助播")
+
+        chk_anchor.setChecked(bool(getattr(app_state, "var_apply_anchor", True)))
+        chk_zhuli.setChecked(bool(getattr(app_state, "var_apply_zhuli", True)))
+
+        def _save_targets():
+            app_state.var_apply_anchor = chk_anchor.isChecked()
+            app_state.var_apply_zhuli = chk_zhuli.isChecked()
+            self._save_runtime_flag("var_apply_anchor", app_state.var_apply_anchor)
+            self._save_runtime_flag("var_apply_zhuli", app_state.var_apply_zhuli)
+
+        chk_anchor.toggled.connect(lambda _=None: _save_targets())
+        chk_zhuli.toggled.connect(lambda _=None: _save_targets())
+
+        th.addWidget(chk_anchor)
+        th.addWidget(chk_zhuli)
+        th.addStretch(1)
+
+        var_body.addWidget(targets)
 
         def switch_row(text: str, sw: SwitchToggle) -> QWidget:
             w = QWidget()
@@ -249,7 +455,9 @@ class MainWindow(QWidget):
         top_row.setSpacing(16)
         top_row.addWidget(sys_card)
         top_row.addWidget(auto_card)
+        top_row.addWidget(var_card)  # ✅ 新增：在自动化旁边
         top_row.addStretch(1)
+
         lay.addLayout(top_row)
 
         splitter = QSplitter(Qt.Horizontal)
@@ -286,13 +494,13 @@ class MainWindow(QWidget):
         log_l = QVBoxLayout(log_wrap)
         log_l.setContentsMargins(0, 0, 0, 0)
 
-
-
+        # 测试
+        log_l.addLayout(test_row)
 
         self.console = QTextEdit()
         self.console.setReadOnly(True)
+        # 测试
         log_l.addWidget(self.console, 1)
-
         self.log_stream = LogStream()
         self.log_stream.text_written.connect(self.append_log)
 
@@ -304,8 +512,6 @@ class MainWindow(QWidget):
         splitter.setStretchFactor(0, 5)
         splitter.setStretchFactor(1, 8)
 
-        log_l.addLayout(test_row)
-        log_l.addWidget(self.console, 1)
 
         # Events
         self.btn_start.clicked.connect(self.start_system)
@@ -373,28 +579,9 @@ class MainWindow(QWidget):
         lay.addWidget(title)
         lay.addWidget(desc)
 
-        # 模式选择
-        mode_row = QWidget()
-        hr = QHBoxLayout(mode_row)
-        hr.setContentsMargins(0, 0, 0, 0)
-        hr.setSpacing(10)
-        hr.addWidget(QLabel("优先模式"))
-        self.cmb_zhuli_mode = QComboBox()
-        self.cmb_zhuli_mode.addItem("模式A（主播关键词优先）", "A")
-        self.cmb_zhuli_mode.addItem("模式B（助播关键词优先）", "B")
-        # set current
-        idx = 0 if app_state.zhuli_mode == "A" else 1
-        self.cmb_zhuli_mode.setCurrentIndex(idx)
-        hr.addWidget(self.cmb_zhuli_mode)
-        hr.addStretch(1)
-        self.btn_save_zhuli_mode = QPushButton("💾 保存模式")
-        hr.addWidget(self.btn_save_zhuli_mode)
-        lay.addWidget(mode_row)
-
+        # ✅ 助播模式（A/B）相关UI与事件已搬到 ZhuliKeywordPanel 内部
         self.zhuli_panel = ZhuliKeywordPanel(self)
         lay.addWidget(self.zhuli_panel, 1)
-
-        self.btn_save_zhuli_mode.clicked.connect(self.save_zhuli_mode)
 
         return page
 
@@ -449,13 +636,7 @@ class MainWindow(QWidget):
         self._save_runtime_flag("enable_zhuli", app_state.enable_zhuli)
         print("🎧 助播关键词语音：已开启" if checked else "🎧 助播关键词语音：已关闭")
 
-    def save_zhuli_mode(self):
-        mode = self.cmb_zhuli_mode.currentData()
-        if mode not in ("A", "B"):
-            mode = "A"
-        app_state.zhuli_mode = mode
-        self._save_runtime_flag("zhuli_mode", mode)
-        QMessageBox.information(self, "保存成功", f"助播模式已保存：{mode}")
+
 
     # =========================
     # Report interval

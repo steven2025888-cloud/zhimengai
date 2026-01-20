@@ -2,6 +2,7 @@
 import os
 import time
 import json
+import http.client
 from typing import Any, Dict, Callable, Optional
 from urllib.parse import urlparse, urlunparse
 
@@ -35,23 +36,67 @@ def _swap_info_to_operate(info_url: str) -> str:
     return urlunparse((u.scheme, u.netloc, path, u.params, u.query, u.fragment))
 
 
+def _normalize_headers(h: Dict[str, str]) -> Dict[str, str]:
+    out = {}
+    for k, v in (h or {}).items():
+        if not k:
+            continue
+        out[str(k).lower()] = str(v)
+    return out
+
+
+def _pick_keep_headers(src: Dict[str, str]) -> Dict[str, str]:
+    """
+    从浏览器真实请求头里，挑出最关键的那批“反爬/鉴权”相关 header
+    """
+    src = _normalize_headers(src)
+
+    keep_keys = [
+        "user-agent",
+        "accept",
+        "accept-language",
+        "content-type",
+
+        "sec-ch-ua",
+        "sec-ch-ua-mobile",
+        "sec-ch-ua-platform",
+
+        "sec-fetch-site",
+        "sec-fetch-mode",
+        "sec-fetch-dest",
+
+        "x-secsdk-csrf-token",
+        "cookie",
+
+        "origin",
+        "referer",
+    ]
+
+    out = {}
+    for k in keep_keys:
+        if k in src and src[k]:
+            out[k] = src[k]
+
+    out.setdefault("accept", "application/json, text/plain, */*")
+    out.setdefault("content-type", "application/json; charset=utf-8")
+    out.setdefault("origin", "https://buyin.jinritemai.com")
+    out.setdefault("referer", DOUYIN_DASHBOARD_URL)
+    return out
+
+
 class DouyinListener:
     """
     抖音直播监听器（稳定版）
-    - 进入控制台才监听
     - 监听 /api/anchor/comment/info
-    - 调用 on_danmaku（主逻辑：关键词+语音，只算一次）
-    - on_danmaku 返回 reply_text 后，这里负责发文字（enable_auto_reply 控制）
-    - ✅ 自动回复：优先使用抓到的 operate_v2 完整URL；没有就由 info URL 推导
-    - ✅ 修复：Playwright Sync API 不支持 json= 参数 -> 用 data=json.dumps(...)
-    - ✅ 修复：命中关键词但无文本时，语音开关开启仍需播语音（兜底逻辑）
+    - on_danmaku 做语音/关键词；这里负责文本自动回复（enable_auto_reply 控制）
+    - 关键：POST operate_v2 必须带 cookie + x-secsdk-csrf-token 等，否则 403
     """
 
     def __init__(
         self,
         state: AppState,
         on_danmaku: Callable[[str, str], str],
-        hit_qa_question=None,  # 兼容旧构造，不使用
+        hit_qa_question=None,
         cooldown_seconds: int = AUTO_REPLY_COOLDOWN_SECONDS,
     ):
         self.state = state
@@ -60,73 +105,97 @@ class DouyinListener:
 
         self.state.dy_is_listening = False
         self._context = None
-        self._page: Optional[Page] = None  # ✅用于403时 reload 自愈
-
-        if not hasattr(self.state, "dy_last_info_url"):
-            self.state.dy_last_info_url = None
-        if not hasattr(self.state, "dy_last_info_headers"):
-            self.state.dy_last_info_headers = {}
+        self._page: Optional[Page] = None
 
         if not hasattr(self.state, "seen_seq"):
             self.state.seen_seq = set()
         if not hasattr(self.state, "dy_reply_cooldown"):
-            self.state.dy_reply_cooldown = {}  # uid -> ts
+            self.state.dy_reply_cooldown = {}
 
-        # ✅保存你手动回复时抓到的 operate_v2 完整 URL（带签名参数）
+        if not hasattr(self.state, "dy_last_info_url"):
+            self.state.dy_last_info_url = None
+        if not hasattr(self.state, "dy_last_info_req_headers"):
+            self.state.dy_last_info_req_headers = {}
+
         if not hasattr(self.state, "dy_operate_url_template"):
             self.state.dy_operate_url_template = None
+        if not hasattr(self.state, "dy_operate_req_headers"):
+            self.state.dy_operate_req_headers = {}
 
-        # ✅语音兜底：避免同一条评论重复触发语音
-        if not hasattr(self.state, "dy_voice_done_cids"):
-            self.state.dy_voice_done_cids = set()
+        # ✅新增：单独缓存 cookie / secsdk（最重要的兜底）
+        if not hasattr(self.state, "dy_cookie_header"):
+            self.state.dy_cookie_header = ""
+        if not hasattr(self.state, "dy_secsdk_csrf_token"):
+            self.state.dy_secsdk_csrf_token = ""
 
-    # ===== 抓取请求：捕获 operate_v2 模板 URL（更稳）=====
+    # ===== 监听 request：抓 info/operate_v2 的真实 headers（重点：cookie + x-secsdk-csrf-token）=====
     def _handle_request(self, req: Request):
         try:
-            if req.method.upper() != "POST":
-                return
             url = req.url
-            if "/api/anchor/comment/operate_v2" in url:
+            h = _normalize_headers(req.headers or {})
+
+            # ✅只要看到 secsdk 就保存
+            secsdk = h.get("x-secsdk-csrf-token", "").strip()
+            if secsdk:
+                self.state.dy_secsdk_csrf_token = secsdk
+
+            # ✅只要看到 cookie 就缓存（取最长那条，通常最完整）
+            ck = h.get("cookie", "")
+            if ck and len(ck) > len(getattr(self.state, "dy_cookie_header", "")):
+                self.state.dy_cookie_header = ck
+
+            # 抓 info：保存 url + headers
+            if "/api/anchor/comment/info" in url:
+                self.state.dy_last_info_url = url
+                self.state.dy_last_info_req_headers = h
+
+            # 抓 operate_v2：保存 url + headers（最贴近手动成功）
+            if "/api/anchor/comment/operate_v2" in url and req.method.upper() == "POST":
                 self.state.dy_operate_url_template = url
+                self.state.dy_operate_req_headers = h
                 print("✅ 已捕获抖音 operate_v2 模板URL（带签名）：", url)
+                print("✅ 已捕获 operate_v2 headers：",
+                      f"cookie_len={len(h.get('cookie',''))} "
+                      f"secsdk_len={len(h.get('x-secsdk-csrf-token',''))} "
+                      f"ua_len={len(h.get('user-agent',''))}")
         except Exception as e:
             print("⚠️ 抖音 _handle_request error:", e)
 
-    # ===== 403 自愈：reload 控制台页面 =====
-    def _reload_dashboard(self):
+    def _context_cookie_fallback(self) -> str:
+        """
+        ✅兼容不同 Playwright 版本：cookies() 用 list URL 更稳
+        """
+        if not self._context:
+            return ""
         try:
-            if self._page:
-                print("🔄 尝试刷新抖音控制台页面（403自愈）...")
-                self._page.reload(wait_until="domcontentloaded", timeout=60_000)
-                time.sleep(0.8)
+            cks = self._context.cookies(["https://buyin.jinritemai.com", "https://jinritemai.com"])
+            print("🍪 context.cookies count =", len(cks))
+            if not cks:
+                return ""
+            return "; ".join([f"{c['name']}={c['value']}" for c in cks if c.get("name")])
         except Exception as e:
-            print("⚠️ 抖音 reload 失败：", e)
+            print("⚠️ context.cookies 读取失败：", e)
+            return ""
 
-    # ===== 发送抖音文本回复 =====
+    # ===== 发送抖音回复（http.client，贴近你手动成功脚本）=====
     def _send_douyin_reply(self, comment: dict, reply_text: str) -> bool:
-        # ✅ 优先用已捕获/推导的 operate_v2 URL；如果没有，就用最新 info URL 推导
+        # 1) URL：优先 operate_v2；否则用 info 推导
         url = (self.state.dy_operate_url_template or "").strip()
         if not url:
             info_url = (self.state.dy_last_info_url or "").strip()
-            if info_url and "/api/anchor/comment/info" in info_url:
+            if info_url:
                 url = _swap_info_to_operate(info_url)
-                self.state.dy_operate_url_template = url
-                print("✅ 使用最新 info 推导 operate_v2：", url)
 
         if not url:
-            print("⚠️ 还没拿到 operate_v2 URL：等待一次 comment/info 响应或手动回一次")
+            print("⚠️ 既没抓到 operate_v2，也没抓到 info_url，无法发送")
             return False
 
         nick = str(comment.get("nick_name") or "")
         uid = str(comment.get("uid") or "")
         cid = str(comment.get("comment_id") or "")
-
         if not (nick and uid and cid):
             print("⚠️ 抖音回复缺字段：nick/uid/comment_id")
             return False
-
-        # 你抓包里 “@梦想家” length=4（包含@），所以这里用 len(nick)+1
-        mention_len = len(nick) + 1
 
         body = {
             "operate_type": 1,
@@ -138,119 +207,101 @@ class DouyinListener:
                 "rtf_content": {
                     "reply_uid": uid,
                     "start": 0,
-                    "length": mention_len
+                    "length": len(nick) + 1
                 }
             }
         }
 
-        if not self._context:
-            print("⚠️ 抖音 context 未就绪")
-            return False
+        # 2) headers：优先 operate_v2 请求头；否则 info 请求头
+        src = {}
+        if getattr(self.state, "dy_operate_req_headers", None):
+            src = self.state.dy_operate_req_headers
+        elif getattr(self.state, "dy_last_info_req_headers", None):
+            src = self.state.dy_last_info_req_headers
 
-        # ✅ 从最近一次 info 请求头里拿 x-secsdk-csrf-token（很多403就差这个）
-        h = self.state.dy_last_info_headers or {}
-        secsdk_csrf = (
-            h.get("x-secsdk-csrf-token")
-            or h.get("X-SecSdk-Csrf-Token")
-            or h.get("x-secsdk-csrf_token")
-            or ""
-        )
+        headers_lc = _pick_keep_headers(src)
 
-        def do_post_once() -> tuple[bool, int, str]:
-            resp = self._context.request.post(
-                url,
-                data=json.dumps(body, ensure_ascii=False),
-                headers={
-                    "content-type": "application/json",
-                    "origin": "https://buyin.jinritemai.com",
-                    "referer": DOUYIN_DASHBOARD_URL,
-                    **({"x-secsdk-csrf-token": secsdk_csrf} if secsdk_csrf else {}),
-                },
-                timeout=10_000
-            )
-            status = resp.status
-            ok = False
-            extra = ""
+        # 固定补齐（http.client 更吃这个）
+        headers = {
+            "Content-Type": "application/json; charset=utf-8",
+            "Accept": headers_lc.get("accept", "application/json, text/plain, */*"),
+            "User-Agent": headers_lc.get("user-agent", ""),
+            "Origin": "https://buyin.jinritemai.com",
+            "Referer": DOUYIN_DASHBOARD_URL,
 
-            try:
-                j = resp.json()
-                ok = (200 <= status < 300) and (j.get("code") == 0) and (j.get("st") == 0)
-                extra = f"code={j.get('code')} st={j.get('st')} msg={j.get('msg')}"
-            except Exception:
-                try:
-                    extra = (resp.text() or "")[:200]
-                except Exception:
-                    extra = ""
-                ok = (200 <= status < 300)
+            "sec-ch-ua": headers_lc.get("sec-ch-ua", ""),
+            "sec-ch-ua-mobile": headers_lc.get("sec-ch-ua-mobile", ""),
+            "sec-ch-ua-platform": headers_lc.get("sec-ch-ua-platform", ""),
+            "Sec-Fetch-Site": headers_lc.get("sec-fetch-site", ""),
+            "Sec-Fetch-Mode": headers_lc.get("sec-fetch-mode", ""),
+            "Sec-Fetch-Dest": headers_lc.get("sec-fetch-dest", ""),
 
-            return ok, status, extra
+            # ✅最关键：secsdk csrf（一定要值非空）
+            "x-secsdk-csrf-token": (headers_lc.get("x-secsdk-csrf-token", "") or self.state.dy_secsdk_csrf_token).strip(),
+        }
+
+        # ✅最关键：cookie（优先：抓包 cookie -> state 缓存 cookie -> context.cookies 拼）
+        cookie = (headers_lc.get("cookie", "") or getattr(self.state, "dy_cookie_header", "") or "").strip()
+        if not cookie:
+            cookie = (self._context_cookie_fallback() or "").strip()
+
+        if cookie:
+            headers["cookie"] = cookie
+
+        # 清理空值
+        headers = {k: v for k, v in headers.items() if v}
+
+        cookie_len = len(headers.get("cookie", ""))
+        secsdk_val = (headers.get("x-secsdk-csrf-token", "") or "").strip()
+        has_secsdk = bool(secsdk_val)
+        print(f"POST operate_v2 准备发送：cookie_len={cookie_len} has_secsdk={has_secsdk} secsdk_len={len(secsdk_val)} dy_cookie_header_len={len(getattr(self.state,'dy_cookie_header',''))}")
+
+        # cookie 还为空时，直接提示（否则必 403）
+        if cookie_len == 0:
+            print("❌ cookie_len=0：这会导致 403。说明：")
+            print("   1) Playwright 没在 req.headers 暴露 cookie（或你没进入 buyin 域）")
+            print("   2) 或 storage_state 里没有 buyin 的 cookie")
+            # 继续发也会 403，但你要看响应 body，所以不提前 return
+
+        # 3) 发送（✅payload 必须 utf-8 bytes）
+        u = urlparse(url)
+        path = u.path + (("?" + u.query) if u.query else "")
+        payload = json.dumps(body, ensure_ascii=False).encode("utf-8")
 
         try:
-            ok, status, extra = do_post_once()
-            print(f"📨 抖音自动回复 status={status} {extra}")
-            if ok:
+            conn = http.client.HTTPSConnection(u.netloc, timeout=10)
+            conn.request("POST", path, payload, headers)
+            res = conn.getresponse()
+            raw = res.read()
+            text = raw.decode("utf-8", errors="replace")
+
+            if res.status != 200:
+                print(f"📨 抖音自动回复 status={res.status} reason={getattr(res, 'reason', '')}")
+                rh = {}
+                for k, v in res.getheaders():
+                    lk = str(k).lower()
+                    if lk in ("x-tt-logid", "x-tt-trace-id", "x-ms-token", "server", "content-type", "location"):
+                        rh[lk] = v
+                if rh:
+                    print("   ↪ resp.headers(key) =", rh)
+                print("   ↪ resp.body(head800) =", (text or "")[:800].replace("\n", "\\n"))
+                return False
+
+            # 200 尝试 json
+            try:
+                j = json.loads(text)
+                ok = (j.get("code") == 0 and j.get("st") == 0)
+                print(f"📨 抖音自动回复 status=200 code={j.get('code')} st={j.get('st')} msg={j.get('msg')}")
+                if not ok:
+                    print("   ↪ resp.json =", j)
+                return ok
+            except Exception:
+                print("📨 抖音自动回复 status=200（非JSON） body(head300)=", (text or "")[:300].replace("\n", "\\n"))
                 return True
 
-            # ✅ 403 自愈：reload + 用最新 info 再推导模板 + 重试一次
-            if status == 403:
-                self._reload_dashboard()
-
-                info_url = (self.state.dy_last_info_url or "").strip()
-                if info_url and "/api/anchor/comment/info" in info_url:
-                    self.state.dy_operate_url_template = _swap_info_to_operate(info_url)
-                    url = self.state.dy_operate_url_template
-
-                ok2, status2, extra2 = do_post_once()
-                print(f"📨 抖音自动回复 retry status={status2} {extra2}")
-                return ok2
-
-            return False
         except Exception as e:
             print("❌ 抖音发送异常：", e)
             return False
-
-    # ===== 语音兜底：命中关键词但没有文本回复，也要播语音 =====
-    def _voice_fallback_if_needed(self, comment: dict, reply_text: str):
-        try:
-            if not getattr(self.state, "enable_danmaku_reply", False):
-                return
-
-            cid = str(comment.get("comment_id") or "")
-            if not cid:
-                return
-            if cid in self.state.dy_voice_done_cids:
-                return
-
-            if (reply_text or "").strip():
-                return
-
-            pending = getattr(self.state, "pending_hit", None)
-            if not pending or not isinstance(pending, (tuple, list)) or len(pending) < 1:
-                return
-            prefix = pending[0]
-            if not prefix:
-                return
-
-            dispatcher = getattr(self.state, "audio_dispatcher", None)
-            folder_manager = getattr(self.state, "folder_manager", None)
-            if not dispatcher or not folder_manager:
-                return
-
-            if getattr(dispatcher, "current_playing", None):
-                return
-
-            wav = None
-            try:
-                wav = folder_manager.pick_next_audio()
-            except Exception:
-                wav = None
-
-            if wav:
-                dispatcher.push_random(wav)
-                self.state.dy_voice_done_cids.add(cid)
-                print(f"🔊 语音兜底已触发：prefix={prefix}（无文本回复）")
-        except Exception as e:
-            print("⚠️ 语音兜底触发失败：", e)
 
     # ===== 状态切换 =====
     def _update_listen_state(self, page: Page, reason: str = ""):
@@ -302,18 +353,14 @@ class DouyinListener:
             except TypeError:
                 self.on_danmaku(nickname, content)
                 reply_text = ""
-            except Exception as e:
-                print("⚠️ on_danmaku 异常：", e)
-                reply_text = ""
-
-            self._voice_fallback_if_needed(c, reply_text)
 
             if not getattr(self.state, "enable_auto_reply", False):
-                if (reply_text or "").strip():
+                if reply_text.strip():
                     print("💤 文本自动回复已关闭，本次仅命中关键词，不发文字")
                 continue
 
-            if not (reply_text or "").strip():
+            if not reply_text.strip():
+                # ✅允许“只播语音不发文字”
                 continue
 
             now = time.time()
@@ -321,11 +368,12 @@ class DouyinListener:
             if now - last < self.cooldown_seconds:
                 continue
 
-            if self._send_douyin_reply(c, (reply_text or "").strip()):
+            ok = self._send_douyin_reply(c, reply_text.strip())
+            if ok:
                 self.state.dy_reply_cooldown[uid or nickname] = now
                 print("✅ 抖音自动回复成功")
             else:
-                print("❌ 抖音自动回复失败（看 status / 是否抓到模板URL）")
+                print("❌ 抖音自动回复失败（已打印失败原因）")
 
     # ===== 响应监听 =====
     def _handle_response(self, resp: Response):
@@ -333,28 +381,12 @@ class DouyinListener:
             return
         if DOUYIN_API_KEYWORD not in resp.url:
             return
-
-        try:
-            self.state.dy_last_info_url = resp.url
-            self.state.dy_last_info_headers = resp.request.headers or {}
-        except Exception:
-            pass
-
-        try:
-            if not (self.state.dy_operate_url_template or "").strip():
-                if "/api/anchor/comment/info" in resp.url:
-                    self.state.dy_operate_url_template = _swap_info_to_operate(resp.url)
-                    print("✅ 已从 info URL 推导 operate_v2 模板：", self.state.dy_operate_url_template)
-        except Exception as e:
-            print("⚠️ 从 info 推导 operate_v2 失败：", e)
-
         try:
             data = resp.json()
         except Exception:
             return
         self._handle_comment_json(data)
 
-    # ===== 登录态 =====
     def _maybe_save_login_state(self, context, page):
         if getattr(self, "_login_state_saved", False):
             return
@@ -375,7 +407,6 @@ class DouyinListener:
         print("🆕 未发现抖音登录缓存，需要登录")
         return browser.new_context(no_viewport=True)
 
-    # ===== 主循环 =====
     def run(self, tick: Callable[[], None]):
         with sync_playwright() as p:
             browser = p.chromium.launch(
@@ -387,7 +418,6 @@ class DouyinListener:
 
             page = context.new_page()
             self._page = page
-
             page.on("request", self._handle_request)
             page.on("response", self._handle_response)
 

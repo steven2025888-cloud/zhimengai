@@ -299,23 +299,63 @@ class LiveListener:
             self.state.is_listening = False
             print("🚪 已离开视频号直播页（不中断播放）")
 
-    def _create_context(self, browser):
-        if os.path.exists(STATE_FILE):
-            print("🔐 使用视频号登录缓存：", STATE_FILE)
-            return browser.new_context(storage_state=STATE_FILE, no_viewport=True)
-        print("🆕 未发现视频号登录缓存，需要扫码登录")
+    def _is_logged_in(self, page: Page) -> bool:
+        """只在确认已进入直播控制台/已登录页面时才算登录成功"""
+        url = (_get_real_url(page) or "").lower()
+
+        # ✅ 最稳：进了直播控制台就一定是已登录
+        if (_get_real_url(page) or "").startswith(LIVE_URL_PREFIX):
+            return True
+
+        # ✅ 兜底：排除常见登录页特征（微信经常改，不要只判断 login.html）
+        if "login" in url or "passport" in url or "auth" in url:
+            return False
+
+        # ✅ 如果已经能看到 HOME_URL 域名且不是登录态，一般也算登录成功（按你项目配置）
+        if (HOME_URL or "").lower() in url:
+            return True
+
+        return False
+
+
+
+        print("🆕 未发现有效视频号登录缓存，需要扫码登录")
         return browser.new_context(no_viewport=True)
 
     def _maybe_save_login_state(self, context, page):
+        # 已保存过就不重复保存
         if getattr(self, "_login_state_saved", False):
             return
-        url = _get_real_url(page)
-        if "login.html" in url:
+
+        # ✅ 关键：只有确认“已登录”才允许保存，避免把未登录态覆盖掉
+        if not self._is_logged_in(page):
             return
+
+        # ✅ 再保险：如果还没进入直播控制台，也别保存（防止 HOME_URL 误判）
+        # 你想更严格就只保留这一条：
+        # if not (_get_real_url(page) or "").startswith(LIVE_URL_PREFIX):
+        #     return
+
         try:
-            context.storage_state(path=STATE_FILE)
+            # 先写临时文件，避免写一半损坏
+            tmp = STATE_FILE + ".tmp"
+            context.storage_state(path=tmp)
+
+            # 校验 cookies 是否非空再覆盖正式文件
+            st = json.load(open(tmp, "r", encoding="utf-8"))
+            cookies = st.get("cookies") if isinstance(st, dict) else None
+            if not (isinstance(cookies, list) and len(cookies) > 0):
+                print("⚠️ 本次 storage_state cookies 为空，取消覆盖 STATE_FILE，避免空态污染")
+                try:
+                    os.remove(tmp)
+                except Exception:
+                    pass
+                return
+
+            os.replace(tmp, STATE_FILE)
             self._login_state_saved = True
             print("💾 视频号登录态已保存：", STATE_FILE)
+
         except Exception as e:
             print("⚠️ 保存视频号登录态失败：", e)
 
@@ -402,18 +442,30 @@ class LiveListener:
 
     def run(self, tick: Callable[[], None]):
         with sync_playwright() as p:
-            browser = p.chromium.launch(
+            # ✅ 1) 固定一个“微信浏览器档案目录”（持久化）
+            # 建议放到和 STATE_FILE 同目录，打包后也稳定
+            base_dir = os.path.dirname(os.path.abspath(STATE_FILE)) if STATE_FILE else os.getcwd()
+            wx_profile_dir = os.path.join(base_dir, "wx_profile")  # 这个文件夹就是“永久登录档案”
+            os.makedirs(wx_profile_dir, exist_ok=True)
+
+            # ✅ 2) 用持久化模式启动（关键）
+            context = p.chromium.launch_persistent_context(
+                user_data_dir=wx_profile_dir,
                 headless=False,
+                no_viewport=True,
                 args=["--start-maximized", "--disable-blink-features=AutomationControlled"],
             )
-            context = self._create_context(browser)
+
             self._context = context
-            page = context.new_page()
+
+            # ✅ 3) 拿到页面（持久化模式通常会自带一个 page）
+            page = context.pages[0] if context.pages else context.new_page()
 
             page.on("request", self._handle_request)
             page.on("response", self._handle_response)
 
-            start_url = HOME_URL if os.path.exists(STATE_FILE) else LOGIN_URL
+            # ✅ 4) 直接打开登录页/主页都行。第一次需要扫码，之后基本就免扫码
+            start_url = HOME_URL or LOGIN_URL
             try:
                 page.goto(start_url, wait_until="domcontentloaded", timeout=60000)
                 print("👉 视频号已打开：", start_url)
@@ -428,7 +480,10 @@ class LiveListener:
                     last_url = url
                     print("🔁 视频号 URL 变化：", url)
 
-                self._maybe_save_login_state(context, page)
+                # ❌ 持久化模式下不需要 storage_state 了
+                # self._maybe_save_login_state(context, page)
+
                 self._update_listen_state(page, reason="poll")
                 tick()
                 time.sleep(0.3)
+

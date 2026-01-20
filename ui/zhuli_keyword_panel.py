@@ -6,26 +6,29 @@ import re
 from pathlib import Path
 from typing import Dict, List, Tuple
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QListWidget, QListWidgetItem, QTabWidget, QPushButton,
-    QFileDialog, QAbstractItemView, QMessageBox, QSpinBox, QInputDialog
+    QFileDialog, QAbstractItemView, QMessageBox, QSpinBox, QInputDialog,
+    QComboBox,  # ✅ 新增
 )
 
 from core.zhuli_keyword_io import load_zhuli_keywords, save_zhuli_keywords, merge_zhuli_keywords
 
-# 尽量复用你项目里的对话框（样式一致）。没有的话就降级用系统对话框。
+from core.state import app_state  # ✅ 新增
+from core.runtime_state import load_runtime_state, save_runtime_state  # ✅ 新增
+
+
 try:
     from ui.dialogs import confirm_dialog, TextInputDialog, MultiLineInputDialog
-except Exception:  # pragma: no cover
+except Exception:
     confirm_dialog = None
     TextInputDialog = None
     MultiLineInputDialog = None
 
 
 def _split_words(raw: str) -> List[str]:
-    """支持：换行 / 英文逗号 / 中文逗号 / 分号"""
     parts = re.split(r"[\n,，;；]+", raw or "")
     return [p.strip() for p in parts if p.strip()]
 
@@ -45,7 +48,6 @@ def _dedup_keep_order(words: List[str]) -> List[str]:
 
 
 def _guess_prefix_from_filename(filename: str) -> str:
-    """从文件名猜测分类前缀：优先取 '_' 或 '-' 或空格 之前的部分。"""
     name = os.path.splitext(os.path.basename(filename))[0]
     for sep in ("_", "-", " "):
         if sep in name:
@@ -55,10 +57,8 @@ def _guess_prefix_from_filename(filename: str) -> str:
 
 
 def _get_zhuli_audio_dir() -> Path:
-    """严格按 config.ZHULI_AUDIO_DIR（exe 同级 zhuli_audio）。"""
     try:
         from config import ZHULI_AUDIO_DIR
-        # 你的 config 里 ZHULI_AUDIO_DIR 是 Path（见你发的 config.py）
         return Path(ZHULI_AUDIO_DIR)
     except Exception:
         return Path.cwd() / "zhuli_audio"
@@ -73,17 +73,24 @@ def _get_supported_exts() -> Tuple[str, ...]:
 
 
 class ZhuliKeywordPanel(QWidget):
-    """助播关键词管理（UI 按你发的 KeywordPanel 布局风格重做）。"""
+    """助播关键词管理"""
 
-    # ✅实时变更信号：外部可监听，立刻更新运行内存（不落盘）
     sig_realtime_changed = Signal(dict)
 
     def __init__(self, parent=None):
         super().__init__(parent)
 
+        # ✅ 载入：会自动从 zhuli_keywords.py 迁移到 runtime_state（如果还没有）
         self.data: Dict[str, dict] = load_zhuli_keywords()
         self.current_prefix: str | None = None
         self.new_added_prefixes: set[str] = set()
+
+        # ✅ 自动保存（防抖）
+        self._autosave_timer = QTimer(self)
+        self._autosave_timer.setSingleShot(True)
+        self._autosave_timer.setInterval(300)
+        self._autosave_timer.timeout.connect(self._flush_autosave)
+        self.sig_realtime_changed.connect(self._schedule_autosave)
 
         root = QVBoxLayout(self)
         root.setSpacing(10)
@@ -97,7 +104,7 @@ class ZhuliKeywordPanel(QWidget):
 
         self.btn_export = QPushButton("导出")
         self.btn_import = QPushButton("导入（合并）")
-        self.btn_save = QPushButton("保存")
+        self.btn_save = QPushButton("保存（可不用点）")
 
         for b in (self.btn_export, self.btn_import, self.btn_save):
             b.setFixedHeight(36)
@@ -107,6 +114,47 @@ class ZhuliKeywordPanel(QWidget):
         header.addWidget(self.btn_save)
         root.addLayout(header)
 
+        # ===== 助播优先模式（A/B） =====
+        mode_row = QWidget()
+        hr = QHBoxLayout(mode_row)
+        hr.setContentsMargins(0, 0, 0, 0)
+        hr.setSpacing(10)
+
+        lab = QLabel("优先模式")
+        lab.setStyleSheet("font-weight:700;")
+        hr.addWidget(lab)
+
+        self.cmb_zhuli_mode = QComboBox()
+        self.cmb_zhuli_mode.addItem("模式A（主播关键词优先）", "A")
+        self.cmb_zhuli_mode.addItem("模式B（助播关键词优先）", "B")
+
+        # 兼容：如果外部没初始化过，也保证有值
+        mode = str(getattr(app_state, "zhuli_mode", "A") or "A").upper()
+        if mode not in ("A", "B"):
+            mode = "A"
+        app_state.zhuli_mode = mode
+
+        self.cmb_zhuli_mode.setCurrentIndex(0 if mode == "A" else 1)
+        self.cmb_zhuli_mode.setObjectName("ZhuliModeCombo")
+
+        hr.addWidget(self.cmb_zhuli_mode)
+        hr.addStretch(1)
+
+        tip = QLabel("切换后实时生效，并自动保存")
+        tip.setStyleSheet("color:#93A4B7;")
+        hr.addWidget(tip)
+
+        root.addWidget(mode_row)
+
+        def on_mode_changed(_idx: int):
+            m = self.cmb_zhuli_mode.currentData()
+            if m not in ("A", "B"):
+                m = "A"
+            app_state.zhuli_mode = m
+            self._save_runtime_flag("zhuli_mode", m)
+            print(f"✅ 助播模式已切换：{m}（实时生效）")
+
+        self.cmb_zhuli_mode.currentIndexChanged.connect(on_mode_changed)
         # ===== 主体 =====
         body = QHBoxLayout()
         body.setSpacing(10)
@@ -146,7 +194,6 @@ class ZhuliKeywordPanel(QWidget):
         right = QVBoxLayout()
         body.addLayout(right, 5)
 
-        # 当前分类行 + 优先级
         current_row = QHBoxLayout()
         self.lbl_current = QLabel("当前分类：-")
         self.lbl_current.setStyleSheet("font-size: 14px; font-weight: 700;")
@@ -158,20 +205,18 @@ class ZhuliKeywordPanel(QWidget):
         self.sp_priority = QSpinBox()
         self.sp_priority.setRange(-999, 999)
         self.sp_priority.setFixedWidth(90)
-        self.sp_priority.setToolTip("优先级越大越优先（这里改动=实时生效；是否落盘由“保存”决定）")
+        self.sp_priority.setToolTip("优先级越大越优先（这里改动=实时生效）")
         current_row.addWidget(pr_lab)
         current_row.addWidget(self.sp_priority)
 
         right.addLayout(current_row)
 
-        # Tab
         self.tabs = QTabWidget()
         right.addWidget(self.tabs, 1)
 
         self.must_list = QListWidget()
         self.any_list = QListWidget()
         self.deny_list = QListWidget()
-
         for lst in (self.must_list, self.any_list, self.deny_list):
             lst.setSelectionMode(QAbstractItemView.ExtendedSelection)
 
@@ -179,7 +224,6 @@ class ZhuliKeywordPanel(QWidget):
         self.tabs.addTab(self.any_list, "意图词（0）")
         self.tabs.addTab(self.deny_list, "排除词（0）")
 
-        # 操作区
         ops = QHBoxLayout()
         self.btn_batch_add = QPushButton("批量添加")
         self.btn_del_selected = QPushButton("删除选中")
@@ -211,12 +255,27 @@ class ZhuliKeywordPanel(QWidget):
         self.btn_save.clicked.connect(self.save_all)
 
         self.btn_scan_dir.clicked.connect(self.scan_zhuli_audio_dir)
-
-        # ✅实时更新（不保存）：你一调优先级，运行时立刻生效
         self.sp_priority.valueChanged.connect(self._realtime_update_priority)
 
-        # 初始加载
         self.refresh_prefix_list()
+
+    def _save_runtime_flag(self, key: str, value):
+        state = load_runtime_state() or {}
+        state[key] = value
+        save_runtime_state(state)
+
+    # ===================== 自动保存（防抖） =====================
+    def _schedule_autosave(self, _data: dict):
+        # 300ms 内多次修改只保存一次
+        self._autosave_timer.start()
+
+    def _flush_autosave(self):
+        try:
+            save_zhuli_keywords(self.data)
+            # 你想看得更明显可以开这行：
+            # print(f"💾 助播关键词已自动保存：{len(self.data)} 个分类")
+        except Exception as e:
+            print("❌ 助播关键词自动保存失败：", e)
 
     # ===================== 左侧分类 =====================
     def refresh_prefix_list(self):
@@ -241,7 +300,6 @@ class ZhuliKeywordPanel(QWidget):
 
         self.prefix_list.blockSignals(False)
 
-        # 尽量保持原选中
         if keep:
             for i in range(self.prefix_list.count()):
                 if self.prefix_list.item(i).data(Qt.UserRole) == keep:
@@ -272,7 +330,7 @@ class ZhuliKeywordPanel(QWidget):
         name = None
 
         if TextInputDialog is not None:
-            dlg = TextInputDialog(self, "新建分类", "请输入分类名（例如：炉膛 / 尺寸 / 售后）：")
+            dlg = TextInputDialog(self, "新建分类", "请输入分类名：")
             dlg.exec()
             if not getattr(dlg, "ok", False) or not getattr(dlg, "value", ""):
                 return
@@ -283,16 +341,16 @@ class ZhuliKeywordPanel(QWidget):
                 return
             name = (name or "").strip()
 
-        if not name:
-            return
-        if name in self.data:
+        if not name or name in self.data:
             return
 
         self.data[name] = {"priority": 0, "must": [], "any": [], "deny": [], "prefix": name}
         self.new_added_prefixes.add(name)
         self.refresh_prefix_list()
 
-        # 选中它
+        # ✅ 关键：新建分类也要实时生效 + 自动保存
+        self.sig_realtime_changed.emit(self.data)
+
         for i in range(self.prefix_list.count()):
             if self.prefix_list.item(i).data(Qt.UserRole) == name:
                 self.prefix_list.setCurrentRow(i)
@@ -315,9 +373,7 @@ class ZhuliKeywordPanel(QWidget):
                 return
             new_name = (new_name or "").strip()
 
-        if not new_name or new_name == self.current_prefix:
-            return
-        if new_name in self.data:
+        if not new_name or new_name == self.current_prefix or new_name in self.data:
             return
 
         cfg = self.data.pop(self.current_prefix)
@@ -331,16 +387,17 @@ class ZhuliKeywordPanel(QWidget):
         self.current_prefix = new_name
         self.refresh_prefix_list()
 
+        # ✅ 关键：重命名也要实时生效 + 自动保存
+        self.sig_realtime_changed.emit(self.data)
+
     def delete_prefix(self):
         if not self.current_prefix:
             return
 
-        ok = False
         if confirm_dialog is not None:
             ok = bool(confirm_dialog(self, "确认删除", f"确定删除分类「{self.current_prefix}」及其全部词条吗？"))
         else:
             ok = QMessageBox.question(self, "确认删除", f"确定删除分类「{self.current_prefix}」及其全部词条吗？") == QMessageBox.Yes
-
         if not ok:
             return
 
@@ -349,12 +406,10 @@ class ZhuliKeywordPanel(QWidget):
         self.current_prefix = None
         self.refresh_prefix_list()
 
-        # 删除属于“结构性变更”，建议直接落盘
-        save_zhuli_keywords(self.data)
         self.sig_realtime_changed.emit(self.data)
 
     # ===================== 右侧词条操作 =====================
-    def _active_key(self) -> Tuple[str, QListWidget, str]:
+    def _active_key(self):
         idx = self.tabs.currentIndex()
         if idx == 0:
             return "must", self.must_list, "必含词"
@@ -376,12 +431,10 @@ class ZhuliKeywordPanel(QWidget):
         cfg.setdefault("prefix", prefix)
         self.data[prefix] = cfg
 
-        # priority
         self.sp_priority.blockSignals(True)
         self.sp_priority.setValue(int(cfg.get("priority", 0) or 0))
         self.sp_priority.blockSignals(False)
 
-        # lists
         self.must_list.clear()
         self.any_list.clear()
         self.deny_list.clear()
@@ -412,9 +465,8 @@ class ZhuliKeywordPanel(QWidget):
 
         key, _, cname = self._active_key()
 
-        text = None
         if MultiLineInputDialog is not None:
-            dlg = MultiLineInputDialog(self, f"批量添加{cname}", "支持：换行分隔 / 逗号分隔（一次可粘贴很多）", default="")
+            dlg = MultiLineInputDialog(self, f"批量添加{cname}", "支持：换行分隔 / 逗号分隔", default="")
             dlg.exec()
             if not getattr(dlg, "ok", False):
                 return
@@ -446,12 +498,10 @@ class ZhuliKeywordPanel(QWidget):
         if not items:
             return
 
-        ok = False
         if confirm_dialog is not None:
             ok = bool(confirm_dialog(self, "确认删除", f"确定删除选中的 {len(items)} 个{cname}吗？"))
         else:
             ok = QMessageBox.question(self, "确认删除", f"确定删除选中的 {len(items)} 个{cname}吗？") == QMessageBox.Yes
-
         if not ok:
             return
 
@@ -468,12 +518,10 @@ class ZhuliKeywordPanel(QWidget):
             return
 
         key, _, cname = self._active_key()
-        ok = False
         if confirm_dialog is not None:
             ok = bool(confirm_dialog(self, "确认清空", f"确定清空当前分类的「{cname}」吗？"))
         else:
             ok = QMessageBox.question(self, "确认清空", f"确定清空当前分类的「{cname}」吗？") == QMessageBox.Yes
-
         if not ok:
             return
 
@@ -485,12 +533,10 @@ class ZhuliKeywordPanel(QWidget):
         if not self.current_prefix:
             return
 
-        ok = False
         if confirm_dialog is not None:
             ok = bool(confirm_dialog(self, "确认清空", f"确定清空分类「{self.current_prefix}」下所有词条吗？"))
         else:
             ok = QMessageBox.question(self, "确认清空", f"确定清空分类「{self.current_prefix}」下所有词条吗？") == QMessageBox.Yes
-
         if not ok:
             return
 
@@ -527,7 +573,6 @@ class ZhuliKeywordPanel(QWidget):
             QMessageBox.warning(self, "导入失败", str(e))
             return
 
-        ok = False
         if confirm_dialog is not None:
             ok = bool(confirm_dialog(self, "确认导入", "将按“合并”方式导入：同名分类会覆盖/补齐字段。\n确定继续？"))
         else:
@@ -541,9 +586,9 @@ class ZhuliKeywordPanel(QWidget):
 
     def save_all(self):
         save_zhuli_keywords(self.data)
-        QMessageBox.information(self, "保存成功", "助播关键词已保存")
+        QMessageBox.information(self, "保存成功", "助播关键词已保存（其实你改动时已自动保存）")
 
-    # ===================== 实时更新（不保存） =====================
+    # ===================== 实时更新 =====================
     def _realtime_update_priority(self, val: int):
         if not self.current_prefix:
             return
@@ -552,7 +597,7 @@ class ZhuliKeywordPanel(QWidget):
         self.data[self.current_prefix] = cfg
         self.sig_realtime_changed.emit(self.data)
 
-    # ===================== 检查目录（按 config.ZHULI_AUDIO_DIR） =====================
+    # ===================== 检查目录 =====================
     def scan_zhuli_audio_dir(self):
         zhuli_dir = _get_zhuli_audio_dir()
         zhuli_dir.mkdir(parents=True, exist_ok=True)
@@ -581,12 +626,10 @@ class ZhuliKeywordPanel(QWidget):
         more = "" if len(new_prefixes) <= 12 else f" …（共 {len(new_prefixes)} 个）"
         msg = f"检测到 {len(new_prefixes)} 个新分类：\n{preview}{more}\n\n是否添加为分类并保存？"
 
-        ok = False
         if confirm_dialog is not None:
             ok = bool(confirm_dialog(self, "检查目录", msg))
         else:
             ok = QMessageBox.question(self, "检查目录", msg) == QMessageBox.Yes
-
         if not ok:
             return
 
@@ -594,12 +637,9 @@ class ZhuliKeywordPanel(QWidget):
             self.data[name] = {"priority": 0, "must": [], "any": [], "deny": [], "prefix": name}
             self.new_added_prefixes.add(name)
 
-        # ✅按你要求：这里是“提示是否保存为分类”——确认后直接落盘
-        save_zhuli_keywords(self.data)
         self.refresh_prefix_list()
         self.sig_realtime_changed.emit(self.data)
 
-        # 选中第一个新增
         first = new_prefixes[0]
         for i in range(self.prefix_list.count()):
             if self.prefix_list.item(i).data(Qt.UserRole) == first:

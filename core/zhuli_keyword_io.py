@@ -1,76 +1,103 @@
+# core/zhuli_keyword_io.py
+from __future__ import annotations
+
+from typing import Dict, Any
 import os
-import json
-from typing import Dict
+import sys
+import importlib
+import importlib.util
+import pprint
+
+KEY = "zhuli_keywords"  # 保留常量名，避免外部引用报错（但不再使用 runtime_state）
 
 
-def _default_file() -> str:
-    # 与 core/keyword_io 同目录放置时：项目根目录下的 zhuli_keywords.py
-    base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-    return os.path.join(base_dir, "zhuli_keywords.py")
-
-
-ZHULI_KEYWORDS_FILE = _default_file()
-
-
-def load_zhuli_keywords() -> Dict[str, dict]:
-    """读取助播关键词配置（zhuli_keywords.py -> dict）。"""
-    if not os.path.exists(ZHULI_KEYWORDS_FILE):
-        return {}
-
-    # 直接执行 python 文件，获得 ZHULI_KEYWORDS
-    data: Dict[str, dict] = {}
-    g: Dict[str, object] = {}
-    try:
-        with open(ZHULI_KEYWORDS_FILE, "r", encoding="utf-8") as f:
-            code = f.read()
-        exec(compile(code, ZHULI_KEYWORDS_FILE, "exec"), g)
-        raw = g.get("ZHULI_KEYWORDS", {})
-        if isinstance(raw, dict):
-            data = raw
-    except Exception:
-        return {}
-
-    # 兜底补字段
-    for k, v in list(data.items()):
-        if not isinstance(v, dict):
-            data.pop(k, None)
-            continue
-        v.setdefault("priority", 0)
-        v.setdefault("must", [])
-        v.setdefault("any", [])
-        v.setdefault("deny", [])
-        v.setdefault("prefix", k)
-
-    return data
-
-
-def save_zhuli_keywords(data: Dict[str, dict]) -> None:
-    """保存到 zhuli_keywords.py（可读性强，便于你手动改）。"""
-    # 规范化
-    out = {}
+def _normalize(data: Dict[str, Any]) -> Dict[str, dict]:
+    """补齐字段/清理脏数据，确保结构稳定。"""
+    out: Dict[str, dict] = {}
     for k, v in (data or {}).items():
         if not isinstance(v, dict):
             continue
-        out[k] = {
-            "priority": int(v.get("priority", 0) or 0),
-            "must": list(v.get("must", []) or []),
-            "any": list(v.get("any", []) or []),
-            "deny": list(v.get("deny", []) or []),
-            "prefix": str(v.get("prefix", k) or k),
-        }
+        prefix = str(v.get("prefix") or k).strip()
+        if not prefix:
+            continue
+        vv = dict(v)
+        vv.setdefault("priority", 0)
+        vv.setdefault("must", [])
+        vv.setdefault("any", [])
+        vv.setdefault("deny", [])
+        vv.setdefault("reply", [])
+        vv["prefix"] = prefix
+        out[prefix] = vv
+    return out
 
-    text = "# 助播关键词配置\nZHULI_KEYWORDS = " + json.dumps(out, ensure_ascii=False, indent=4)
 
-    with open(ZHULI_KEYWORDS_FILE, "w", encoding="utf-8") as f:
-        f.write(text)
+def _get_zhuli_keywords_py_path() -> str:
+    """
+    获取 zhuli_keywords.py 的真实路径：
+    - 优先通过 importlib 找到模块文件位置
+    - 找不到就退化到当前工作目录下的 zhuli_keywords.py
+    """
+    spec = importlib.util.find_spec("zhuli_keywords")
+    if spec and spec.origin and spec.origin.endswith(".py") and os.path.exists(spec.origin):
+        return spec.origin
+
+    # fallback: 运行目录
+    guess = os.path.join(os.getcwd(), "zhuli_keywords.py")
+    return guess
+
+
+def load_zhuli_keywords() -> Dict[str, dict]:
+    """
+    只从 zhuli_keywords.py 读取（不再读取/迁移/写入 runtime_state.json）。
+    """
+    try:
+        # 为了“实时更新”，尽量 reload 一次
+        import zhuli_keywords  # type: ignore
+        importlib.reload(zhuli_keywords)  # type: ignore
+
+        py_data = getattr(zhuli_keywords, "ZHULI_KEYWORDS", {})  # type: ignore
+        if not isinstance(py_data, dict):
+            py_data = {}
+        return _normalize(py_data)
+    except Exception:
+        return {}
+
+
+def save_zhuli_keywords(data: Dict[str, dict]) -> None:
+    """
+    只保存到 zhuli_keywords.py（下次启动仍保留），不再写 runtime_state.json。
+    """
+    path = _get_zhuli_keywords_py_path()
+    norm = _normalize(data or {})
+
+    # 生成可读性更好的 python 文件内容
+    body = pprint.pformat(norm, width=140, sort_dicts=False)
+
+    content = (
+        "# -*- coding: utf-8 -*-\n"
+        "# 自动生成：助理关键词配置（ZHULI_KEYWORDS）\n"
+        "# 请勿手动修改格式（可在程序内编辑/导入导出）\n\n"
+        f"ZHULI_KEYWORDS = {body}\n"
+    )
+
+    # 确保目录存在
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+
+    # 写入文件
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(content)
+
+    # 写完后让 import 读取新内容
+    importlib.invalidate_caches()
+    if "zhuli_keywords" in sys.modules:
+        try:
+            importlib.reload(sys.modules["zhuli_keywords"])
+        except Exception:
+            pass
 
 
 def merge_zhuli_keywords(base: Dict[str, dict], incoming: Dict[str, dict]) -> Dict[str, dict]:
-    """合并：incoming 覆盖 base 同 key 字段（不破坏未提供字段）。"""
-    base = dict(base or {})
-    for k, inc in (incoming or {}).items():
-        if k not in base or not isinstance(base.get(k), dict):
-            base[k] = inc
-        else:
-            base[k].update(inc)
+    base = _normalize(base or {})
+    inc = _normalize(incoming or {})
+    base.update(inc)
     return base
