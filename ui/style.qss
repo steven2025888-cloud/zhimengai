@@ -70,3 +70,41 @@ QTabBar::tab:selected {
 QSplitter::handle {
   background: rgba(255,255,255,0.06);
 }
+
+/* ===== Left Side Menu ===== */
+QListWidget#SideMenu {
+  background: #0F1A2E;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 14px;
+  padding: 8px;
+}
+
+QListWidget#SideMenu::item {
+  height: 42px;
+  border-radius: 10px;
+  padding-left: 12px;
+  color: #C9D6E5;
+}
+
+QListWidget#SideMenu::item:hover {
+  background: rgba(255,255,255,0.06);
+}
+
+QListWidget#SideMenu::item:selected {
+  background: rgba(43,127,255,0.22);
+  border: 1px solid rgba(43,127,255,0.35);
+  color: #E6EEF8;
+}
+
+/* ===== Card container (like screenshot blocks) ===== */
+QWidget#Card {
+  background: rgba(255,255,255,0.03);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 14px;
+}
+
+QLabel#CardTitle {
+  font-weight: 800;
+  color: #E6EEF8;
+  font-size: 14px;
+}

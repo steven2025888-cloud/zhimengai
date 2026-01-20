@@ -24,10 +24,7 @@ def resource_path(relative: str) -> str:
     return os.path.join(os.path.abspath("."), relative)
 
 
-def ensure_audio_assets_dir():
-    """确保音频资源目录存在"""
-    AUDIO_BASE_DIR.mkdir(parents=True, exist_ok=True)
-    print(f"📁 audio_assets 目录已就绪：{AUDIO_BASE_DIR}")
+
 
 
 def clear_audio_cache():
@@ -54,7 +51,6 @@ if __name__ == "__main__":
     force_check_update_and_exit_if_needed()
 
     # 初始化目录
-    ensure_audio_assets_dir()
     clear_audio_cache()
 
     # 设置窗口图标

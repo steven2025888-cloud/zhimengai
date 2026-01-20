@@ -28,6 +28,18 @@ voice_client = VoiceApiClient(BASE_URL, app_state.license_key)
 REPORT_INTERVAL_MINUTES = 15  # 默认值
 
 
+def start_reporter_thread(dispatcher: AudioDispatcher, state: AppState | None = None):
+    """
+    兼容旧调用：voice_reporter.start_reporter_thread(dispatcher)
+
+    实际启动逻辑：开线程跑 voice_report_loop(state, dispatcher)
+    """
+    st = state or app_state
+    t = threading.Thread(target=voice_report_loop, args=(st, dispatcher), daemon=True)
+    t.start()
+    print("⏱ 已启动语音报时线程（voice_report_loop）")
+    return t
+
 def call_cloud_tts(text: str, model_id: int, timeout: int = 300) -> str:
     # 同步授权
     from api.voice_api import VoiceApiClient
@@ -235,9 +247,14 @@ def voice_report_loop(state: AppState, dispatcher: AudioDispatcher):
 
             if now >= target:
                 if pending_wav and state.enable_voice_report and state.live_ready:
-                    dispatcher.push_report_resume(pending_wav)
+                    if hasattr(dispatcher, "push_report_resume"):
+                        dispatcher.push_report_resume(pending_wav)
+                    else:
+                        dispatcher.push_report(pending_wav)
 
                 break
 
             time.sleep(0.5)
+
+
 

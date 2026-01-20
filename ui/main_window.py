@@ -1,32 +1,23 @@
-
-# main_window.py (Fixed)
-# - Uses VoiceModelPanel in a dialog for model management (MP3/WAV)
-# - Removes any references to non-existent VoiceModelLoader UI
-# - Removes undefined btn_upload_model
-# - Keeps existing features: start, audio tools, automation switches, logs, FolderOrderPanel, KeywordPanel
-# - Cleaned imports and stable signal bindings
-
 import os
 import sys
 import threading
-import re
-import shutil
 import functools
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QTextEdit,
-    QPushButton, QSplitter, QInputDialog, QMessageBox, QDialog, QApplication
+    QPushButton, QSplitter, QMessageBox, QDialog, QApplication,
+    QListWidget, QListWidgetItem, QStackedWidget, QSpinBox, QComboBox
 )
 from PySide6.QtCore import Qt, QObject, Signal
 from PySide6.QtGui import QTextCursor, QIcon
 
 from main import main
 from ui.keyword_panel import KeywordPanel
-from ui.dialogs import confirm_dialog
-from core.audio_tools import reorder_audio_files
-from audio import voice_reporter
 from ui.voice_model_panel import VoiceModelPanel
 from ui.folder_order_panel import FolderOrderPanel
+from ui.switch_toggle import SwitchToggle
+from ui.audio_tools_page import AudioToolsPage
+from ui.zhuli_keyword_panel import ZhuliKeywordPanel
 
 from core.state import app_state
 from api.voice_api import get_machine_code
@@ -51,13 +42,17 @@ class MainWindow(QWidget):
     def __init__(self, resource_path_func, expire_time: str | None = None, license_key: str = ""):
         super().__init__()
 
-        from core.runtime_state import load_runtime_state, save_runtime_state
+        from core.runtime_state import load_runtime_state
 
-        runtime = load_runtime_state()
+        runtime = load_runtime_state() or {}
 
-        app_state.enable_voice_report = runtime.get("enable_voice_report", False)
-        app_state.enable_danmaku_reply = runtime.get("enable_danmaku_reply", False)
-        app_state.enable_auto_reply = runtime.get("enable_auto_reply", False)
+        app_state.enable_voice_report = bool(runtime.get("enable_voice_report", False))
+        app_state.enable_danmaku_reply = bool(runtime.get("enable_danmaku_reply", False))
+        app_state.enable_auto_reply = bool(runtime.get("enable_auto_reply", False))
+        app_state.enable_zhuli = bool(runtime.get("enable_zhuli", True))
+        app_state.zhuli_mode = str(runtime.get("zhuli_mode", "A") or "A").upper()
+        if app_state.zhuli_mode not in ("A", "B"):
+            app_state.zhuli_mode = "A"
 
         self.license_key = license_key
         self.resource_path = resource_path_func
@@ -69,10 +64,24 @@ class MainWindow(QWidget):
 
         self._main_started = False
 
-        root = QVBoxLayout(self)
+        # ===== Layout: Left menu + Right stacked pages =====
+        root = QHBoxLayout(self)
+        root.setContentsMargins(12, 12, 12, 12)
         root.setSpacing(12)
 
-        # ===== 顶部标题 =====
+        self.side = QListWidget()
+        self.side.setObjectName("SideMenu")
+        self.side.setFixedWidth(170)
+        self.side.setSpacing(6)
+        root.addWidget(self.side)
+
+        right = QWidget()
+        right_l = QVBoxLayout(right)
+        right_l.setContentsMargins(0, 0, 0, 0)
+        right_l.setSpacing(12)
+        root.addWidget(right, 1)
+
+        # ===== Top title =====
         top = QHBoxLayout()
         title = QLabel("AI直播工具")
         title.setStyleSheet("font-size: 20px; font-weight: 800;")
@@ -87,104 +96,9 @@ class MainWindow(QWidget):
         self.lbl_expire = QLabel(f"到期时间：{expire_text}")
         self.lbl_expire.setStyleSheet("color:#FFB020; font-weight:700;")
         top.addWidget(self.lbl_expire)
+        right_l.addLayout(top)
 
-        root.addLayout(top)
-
-        # ===== 创建所有按钮 =====
-        BTN_W, BTN_H = 110, 64
-        SW_W, SW_H = 130, 64
-
-        self.btn_start = QPushButton("🚀 启动系统")
-
-        self.btn_reorder_audio = QPushButton("🧹 排序音频")
-        self.btn_copy_audio = QPushButton("📁 复制音频")
-        self.btn_check_audio = QPushButton("🔍 检查音频")
-        self.btn_split_audio = QPushButton("✂️ 自动裁剪")
-        self.btn_clear_log = QPushButton("🧹 清空日志")
-
-        # 音色模型（弹窗）
-        self.btn_voice_model = QPushButton("🎤 音色模型")
-        self.btn_voice_model.setFixedSize(120, 64)
-
-        self.btn_report_interval = QPushButton(f"⏱ 间隔\n{voice_reporter.REPORT_INTERVAL_MINUTES} 分")
-
-        self.btn_report_switch = QPushButton()
-        self.btn_report_switch.setCheckable(True)
-        self.btn_report_switch.setChecked(app_state.enable_voice_report)
-
-        self.btn_auto_reply = QPushButton()
-        self.btn_auto_reply.setCheckable(True)
-        self.btn_auto_reply.setChecked(app_state.enable_auto_reply)
-
-        self.btn_danmaku_reply = QPushButton()
-        self.btn_danmaku_reply.setCheckable(True)
-        self.btn_danmaku_reply.setChecked(app_state.enable_danmaku_reply)
-
-        # ===== 开关样式函数 =====
-        def set_switch_style(btn, title, enabled):
-            btn.setFixedSize(SW_W, SW_H)
-            btn.setText(f"{title}\n{'已开启' if enabled else '已关闭'}")
-            btn.setStyleSheet(f"""
-                QPushButton {{
-                    border-radius: 8px;
-                    font-weight: 700;
-                    background: {"#E6FFFB" if enabled else "#FFF1F0"};
-                    color: {"#08979C" if enabled else "#CF1322"};
-                }}
-            """)
-
-        set_switch_style(self.btn_report_switch, "⏱ 报时", app_state.enable_voice_report)
-        set_switch_style(self.btn_auto_reply, "💬 文本回复", app_state.enable_auto_reply)
-        set_switch_style(self.btn_danmaku_reply, "📣 语音回复", app_state.enable_danmaku_reply)
-
-        # ===== 分组容器 =====
-        def make_group(title):
-            frame = QWidget()
-            frame.setStyleSheet("""
-                QWidget {
-                    border: 1px solid rgba(255,255,255,0.9);
-                    border-radius: 10px;
-                    background: transparent;
-                }
-            """)
-
-            v = QVBoxLayout(frame)
-            v.setContentsMargins(10, 10, 10, 10)
-            v.setSpacing(8)
-
-            lbl = QLabel(title)
-            lbl.setAlignment(Qt.AlignCenter)
-            lbl.setStyleSheet("font-weight:800;color:#ffffff;")
-            v.addWidget(lbl)
-
-            row = QHBoxLayout()
-            row.setSpacing(8)
-            v.addLayout(row)
-
-            return frame, row
-
-        # 系统组
-        sys_box, sys_row = make_group("系统")
-        self.btn_start.setFixedSize(120, BTN_H)
-        sys_row.addWidget(self.btn_start)
-        sys_row.addWidget(self.btn_voice_model)
-
-        # 音频工具组
-        audio_box, audio_row = make_group("音频工具")
-        for b in (self.btn_reorder_audio, self.btn_copy_audio, self.btn_check_audio, self.btn_split_audio,
-                  self.btn_clear_log):
-            b.setFixedSize(BTN_W, BTN_H)
-            audio_row.addWidget(b)
-
-        # 自动化控制组
-        auto_box, auto_row = make_group("自动化控制")
-        self.btn_report_interval.setFixedSize(120, SW_H)
-        auto_row.addWidget(self.btn_report_switch)
-        auto_row.addWidget(self.btn_report_interval)
-        auto_row.addWidget(self.btn_auto_reply)
-        auto_row.addWidget(self.btn_danmaku_reply)
-
-        # 载入全局主题 QSS
+        # ===== Load QSS =====
         qss_path = self.resource_path(os.path.join("ui", "style.qss"))
         if os.path.exists(qss_path):
             with open(qss_path, "r", encoding="utf-8") as f:
@@ -192,30 +106,192 @@ class MainWindow(QWidget):
         else:
             print("⚠️ 未找到 style.qss：", qss_path)
 
-        # 总布局
-        panel_row = QHBoxLayout()
-        panel_row.setSpacing(16)
-        panel_row.addWidget(sys_box)
-        panel_row.addWidget(audio_box)
-        panel_row.addWidget(auto_box)
-        panel_row.addStretch(1)
+        # ===== Stack pages =====
+        self.stack = QStackedWidget()
+        right_l.addWidget(self.stack, 1)
 
-        root.addLayout(panel_row)
+        # ===== Menu names =====
+        self._menu_names = [
+            "AI工作台",
+            "关键词设置",
+            "助播设置",
+            "播控设置",
+            "DPS设置",
+            "回复弹窗",
+            "音频工具",
+            "话术改写",
+            "音色模型",
+            "自动切换",
+            "评论管理",
+            "使用介绍",
+        ]
+        for name in self._menu_names:
+            self.side.addItem(QListWidgetItem(name))
 
-        # ===== 主体区域（FolderOrderPanel + 日志 + 关键词） =====
+        # ===== Build pages (严格按菜单顺序) =====
+        for name in self._menu_names:
+            if name == "AI工作台":
+                self.stack.addWidget(self._build_workbench_page())
+            elif name == "关键词设置":
+                self.stack.addWidget(self._build_keyword_page())
+            elif name == "助播设置":
+                self.stack.addWidget(self._build_zhuli_page())
+            elif name == "音频工具":
+                self.stack.addWidget(AudioToolsPage(self))
+            elif name == "音色模型":
+                self.stack.addWidget(self._build_voice_model_page())
+            else:
+                self.stack.addWidget(self._build_placeholder_page(name))
+
+        self.side.currentRowChanged.connect(self.stack.setCurrentIndex)
+        self.side.setCurrentRow(0)
+
+    # =========================
+    # Page Builders
+    # =========================
+    def _build_placeholder_page(self, title: str) -> QWidget:
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        lab = QLabel(f"{title}（开发中）")
+        lab.setAlignment(Qt.AlignCenter)
+        lab.setStyleSheet("color:#93A4B7; font-size:14px;")
+        lay.addStretch(1)
+        lay.addWidget(lab)
+        lay.addStretch(1)
+        return w
+
+    def _make_card(self, title_text: str) -> tuple[QWidget, QVBoxLayout]:
+        frame = QWidget()
+        frame.setObjectName("Card")
+
+        v = QVBoxLayout(frame)
+        v.setContentsMargins(10, 10, 10, 10)
+        v.setSpacing(8)
+
+        lbl = QLabel(title_text)
+        lbl.setAlignment(Qt.AlignCenter)
+        lbl.setObjectName("CardTitle")
+        v.addWidget(lbl)
+
+        body = QVBoxLayout()
+        body.setSpacing(10)
+        v.addLayout(body)
+
+        return frame, body
+
+    def _build_workbench_page(self) -> QWidget:
+        from audio import voice_reporter
+
+        BTN_H = 64
+
+        self.btn_start = QPushButton("🚀 启动系统")
+        self.btn_start.setFixedSize(160, BTN_H)
+
+        self.btn_clear_log = QPushButton("🧹 清空日志")
+        self.btn_clear_log.setFixedSize(140, BTN_H)
+
+        # 报时间隔按钮（单独一行）
+        self.btn_report_interval = QPushButton(f"⏱ 报时间隔：{voice_reporter.REPORT_INTERVAL_MINUTES} 分钟")
+        self.btn_report_interval.setFixedHeight(32)
+        self.btn_report_interval.setMinimumWidth(220)
+
+        # Switch toggles
+        self.sw_report = SwitchToggle(checked=app_state.enable_voice_report)
+        self.sw_auto_reply = SwitchToggle(checked=app_state.enable_auto_reply)
+        self.sw_danmaku_reply = SwitchToggle(checked=app_state.enable_danmaku_reply)
+        self.sw_zhuli = SwitchToggle(checked=app_state.enable_zhuli)
+
+        # Cards
+        sys_card, sys_body = self._make_card("系统")
+        row = QHBoxLayout()
+        row.setSpacing(10)
+        row.addWidget(self.btn_start)
+        row.addWidget(self.btn_clear_log)
+        row.addStretch(1)
+        sys_body.addLayout(row)
+
+        auto_card, auto_body = self._make_card("自动化控制")
+
+
+        def switch_row(text: str, sw: SwitchToggle) -> QWidget:
+            w = QWidget()
+            h = QHBoxLayout(w)
+            h.setContentsMargins(8, 6, 8, 6)
+            h.setSpacing(10)
+            h.addWidget(QLabel(text))
+            h.addStretch(1)
+            h.addWidget(sw)
+            return w
+
+        def button_row(text: str, btn: QPushButton) -> QWidget:
+            w = QWidget()
+            h = QHBoxLayout(w)
+            h.setContentsMargins(8, 6, 8, 6)
+            h.setSpacing(10)
+            h.addWidget(QLabel(text))
+            h.addStretch(1)
+            h.addWidget(btn)
+            return w
+
+        auto_body.addWidget(switch_row("⏱ 随机报时", self.sw_report))
+        auto_body.addWidget(button_row("⏱ 报时间隔", self.btn_report_interval))
+        auto_body.addWidget(switch_row("💬 关键词文本回复", self.sw_auto_reply))
+        auto_body.addWidget(switch_row("📣 弹幕语音回复", self.sw_danmaku_reply))
+        auto_body.addWidget(switch_row("🎧 助播关键词语音", self.sw_zhuli))
+
+        # Workbench layout
+        page = QWidget()
+        lay = QVBoxLayout(page)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(12)
+
+        top_row = QHBoxLayout()
+        top_row.setSpacing(16)
+        top_row.addWidget(sys_card)
+        top_row.addWidget(auto_card)
+        top_row.addStretch(1)
+        lay.addLayout(top_row)
+
         splitter = QSplitter(Qt.Horizontal)
-        root.addWidget(splitter, 1)
+        lay.addWidget(splitter, 1)
 
         self.folder_panel = FolderOrderPanel(self)
+        try:
+            fm = self.folder_panel.manager
+            app_state.folder_manager = fm
+            print("📂 已注册 folder_manager 到全局 AppState")
+        except Exception as e:
+            print("⚠️ folder_manager 注入失败：", e)
+
         splitter.addWidget(self.folder_panel)
 
-        left = QWidget()
-        left_l = QVBoxLayout(left)
-        left_l.setContentsMargins(0, 0, 0, 0)
+        from PySide6.QtWidgets import QLineEdit
+
+        self.test_input = QLineEdit()
+        self.test_input.setPlaceholderText("输入一条模拟弹幕，例如：这个多少钱")
+
+        self.btn_test_danmaku = QPushButton("🧪 发送测试弹幕")
+        self.btn_test_danmaku.setFixedWidth(140)
+
+        test_row = QHBoxLayout()
+        test_row.addWidget(QLabel("本地弹幕测试："))
+        test_row.addWidget(self.test_input, 1)
+        test_row.addWidget(self.btn_test_danmaku)
+
+
+        log_wrap = QWidget()
+
+
+
+        log_l = QVBoxLayout(log_wrap)
+        log_l.setContentsMargins(0, 0, 0, 0)
+
+
+
 
         self.console = QTextEdit()
         self.console.setReadOnly(True)
-        left_l.addWidget(self.console, 1)
+        log_l.addWidget(self.console, 1)
 
         self.log_stream = LogStream()
         self.log_stream.text_written.connect(self.append_log)
@@ -224,131 +300,227 @@ class MainWindow(QWidget):
         sys.stdout = SafeTee(self.log_stream, log_fp)
         sys.stderr = SafeTee(self.log_stream, log_fp)
 
-        splitter.addWidget(left)
-
-        self.keyword_panel = KeywordPanel(self)
-        splitter.addWidget(self.keyword_panel)
-
+        splitter.addWidget(log_wrap)
         splitter.setStretchFactor(0, 5)
-        splitter.setStretchFactor(1, 5)
+        splitter.setStretchFactor(1, 8)
 
-        # ===== 事件绑定 =====
+        log_l.addLayout(test_row)
+        log_l.addWidget(self.console, 1)
+
+        # Events
         self.btn_start.clicked.connect(self.start_system)
-        self.btn_reorder_audio.clicked.connect(self.handle_reorder_audio)
-        self.btn_copy_audio.clicked.connect(self.handle_copy_audio)
-        self.btn_check_audio.clicked.connect(self.handle_check_audio)
-        self.btn_split_audio.clicked.connect(self.handle_split_audio)
         self.btn_clear_log.clicked.connect(self.clear_log)
 
-        self.btn_report_switch.clicked.connect(self.toggle_report_switch)
-        self.btn_auto_reply.toggled.connect(self.toggle_auto_reply)
-        self.btn_danmaku_reply.toggled.connect(self.toggle_danmaku_reply)
         self.btn_report_interval.clicked.connect(self.set_report_interval)
-        self.btn_voice_model.clicked.connect(self.open_voice_model_dialog)
 
-    # ===== 弹窗：音色模型管理（VoiceModelPanel） =====
-    def open_voice_model_dialog(self):
-        dlg = QDialog(self)
-        dlg.setWindowTitle("主播音色模型管理（支持 MP3 / WAV）")
-        dlg.setFixedSize(520, 680)
+        self.sw_report.toggled.connect(self.toggle_report_switch)
+        self.sw_auto_reply.toggled.connect(self.toggle_auto_reply)
+        self.sw_danmaku_reply.toggled.connect(self.toggle_danmaku_reply)
+        self.sw_zhuli.toggled.connect(self.toggle_zhuli)
+        self.btn_test_danmaku.clicked.connect(self.send_test_danmaku)
 
-        layout = QVBoxLayout(dlg)
+
+        return page
+
+    def send_test_danmaku(self):
+        text = (self.test_input.text() or "").strip()
+        if not text:
+            return
+
+        print("🧪 本地模拟弹幕：", text)
+
+        from core.state import app_state
+
+        cb = getattr(app_state, "on_danmaku_cb", None)
+        if not cb:
+            print("⚠️ 系统尚未启动或未注册回调：请先点【启动系统】")
+            return
+
+        try:
+            reply = cb("测试用户", text) or ""
+            if reply.strip():
+                print("🧪 本次命中文本回复：", reply)
+        except Exception as e:
+            print("❌ 模拟弹幕异常：", e)
+
+        self.test_input.clear()
+
+    def _build_keyword_page(self) -> QWidget:
+        page = QWidget()
+        lay = QVBoxLayout(page)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(10)
+
+        title = QLabel("关键词设置")
+        title.setStyleSheet("font-size:16px;font-weight:800;")
+        lay.addWidget(title)
+
+        self.keyword_panel = KeywordPanel(self)
+        lay.addWidget(self.keyword_panel, 1)
+        return page
+
+    def _build_zhuli_page(self) -> QWidget:
+        page = QWidget()
+        lay = QVBoxLayout(page)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(10)
+
+        title = QLabel("助播设置")
+        title.setStyleSheet("font-size:16px;font-weight:800;")
+        desc = QLabel("配置助播关键词：命中后播放 zhuli_audio 目录对应前缀音频")
+        desc.setStyleSheet("color:#93A4B7;")
+
+        lay.addWidget(title)
+        lay.addWidget(desc)
+
+        # 模式选择
+        mode_row = QWidget()
+        hr = QHBoxLayout(mode_row)
+        hr.setContentsMargins(0, 0, 0, 0)
+        hr.setSpacing(10)
+        hr.addWidget(QLabel("优先模式"))
+        self.cmb_zhuli_mode = QComboBox()
+        self.cmb_zhuli_mode.addItem("模式A（主播关键词优先）", "A")
+        self.cmb_zhuli_mode.addItem("模式B（助播关键词优先）", "B")
+        # set current
+        idx = 0 if app_state.zhuli_mode == "A" else 1
+        self.cmb_zhuli_mode.setCurrentIndex(idx)
+        hr.addWidget(self.cmb_zhuli_mode)
+        hr.addStretch(1)
+        self.btn_save_zhuli_mode = QPushButton("💾 保存模式")
+        hr.addWidget(self.btn_save_zhuli_mode)
+        lay.addWidget(mode_row)
+
+        self.zhuli_panel = ZhuliKeywordPanel(self)
+        lay.addWidget(self.zhuli_panel, 1)
+
+        self.btn_save_zhuli_mode.clicked.connect(self.save_zhuli_mode)
+
+        return page
+
+    def _build_voice_model_page(self) -> QWidget:
+        page = QWidget()
+        lay = QVBoxLayout(page)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(10)
+
+        title = QLabel("音色模型")
+        title.setStyleSheet("font-size:16px;font-weight:800;")
+        desc = QLabel("在这里上传 / 删除 / 设置默认主播音色（支持 MP3 / WAV）")
+        desc.setStyleSheet("color:#93A4B7;")
+
+        lay.addWidget(title)
+        lay.addWidget(desc)
+
         panel = VoiceModelPanel(
             base_url=BASE_URL,
             license_key=self.license_key,
-            parent=dlg
+            parent=page
         )
-        layout.addWidget(panel)
+        lay.addWidget(panel, 1)
+        return page
 
-        dlg.exec()
-
-    # ===== 通用样式方法 =====
-    def set_switch_style(self, btn, title, enabled):
-        btn.setFixedSize(130, 64)
-        btn.setText(f"{title}\n{'已开启' if enabled else '已关闭'}")
-        btn.setStyleSheet(f"""
-            QPushButton {{
-                border-radius: 8px;
-                font-weight: 700;
-                background: {"#E6FFFB" if enabled else "#FFF1F0"};
-                color: {"#08979C" if enabled else "#CF1322"};
-            }}
-        """)
-
-    # ===== 开关逻辑 =====
-    def toggle_danmaku_reply(self, checked: bool):
+    # =========================
+    # Switch logic + runtime_state
+    # =========================
+    def _save_runtime_flag(self, key: str, value):
         from core.runtime_state import load_runtime_state, save_runtime_state
-        app_state.enable_danmaku_reply = bool(checked)
-        state = load_runtime_state()
-        state["enable_danmaku_reply"] = app_state.enable_danmaku_reply
+        state = load_runtime_state() or {}
+        state[key] = value
         save_runtime_state(state)
-        self.set_switch_style(self.btn_danmaku_reply, "📣 语音回复", checked)
+
+    def toggle_danmaku_reply(self, checked: bool):
+        app_state.enable_danmaku_reply = bool(checked)
+        self._save_runtime_flag("enable_danmaku_reply", app_state.enable_danmaku_reply)
         print("📣 弹幕自动回复已开启" if checked else "📣 弹幕自动回复已关闭")
 
     def toggle_auto_reply(self, checked: bool):
-        from core.runtime_state import load_runtime_state, save_runtime_state
         app_state.enable_auto_reply = bool(checked)
-        state = load_runtime_state()
-        state["enable_auto_reply"] = app_state.enable_auto_reply
-        save_runtime_state(state)
-        self.set_switch_style(self.btn_auto_reply, "💬 文本回复", checked)
+        self._save_runtime_flag("enable_auto_reply", app_state.enable_auto_reply)
         print("💬 关键词自动回复：已开启" if checked else "💬 关键词自动回复：已关闭")
 
-    def toggle_report_switch(self):
-        from core.runtime_state import save_runtime_state, load_runtime_state
-        enabled = self.btn_report_switch.isChecked()
-        app_state.enable_voice_report = enabled
-        state = load_runtime_state()
-        state["enable_voice_report"] = enabled
-        save_runtime_state(state)
-        self.set_switch_style(self.btn_report_switch, "⏱ 报时", enabled)
-        print("⏱ 自动语音报时：已开启" if enabled else "⏱ 自动语音报时：已关闭")
+    def toggle_report_switch(self, checked: bool):
+        app_state.enable_voice_report = bool(checked)
+        self._save_runtime_flag("enable_voice_report", app_state.enable_voice_report)
+        print("⏱ 自动语音报时：已开启" if checked else "⏱ 自动语音报时：已关闭")
 
-    # ===== 音频裁剪 =====
-    def handle_split_audio(self):
-        from PySide6.QtWidgets import QFileDialog
-        from config import AUDIO_BASE_DIR
-        from core.audio_tools import smart_split_audio_to_dir
+    def toggle_zhuli(self, checked: bool):
+        app_state.enable_zhuli = bool(checked)
+        self._save_runtime_flag("enable_zhuli", app_state.enable_zhuli)
+        print("🎧 助播关键词语音：已开启" if checked else "🎧 助播关键词语音：已关闭")
 
-        file_path, _ = QFileDialog.getOpenFileName(
-            self, "选择需要裁剪的音频", "",
-            "音频文件 (*.mp3 *.wav *.m4a *.aac *.flac *.ogg)"
-        )
-        if not file_path:
-            return
+    def save_zhuli_mode(self):
+        mode = self.cmb_zhuli_mode.currentData()
+        if mode not in ("A", "B"):
+            mode = "A"
+        app_state.zhuli_mode = mode
+        self._save_runtime_flag("zhuli_mode", mode)
+        QMessageBox.information(self, "保存成功", f"助播模式已保存：{mode}")
 
-        max_min, ok = QInputDialog.getDouble(
-            self, "设置最长时长（分钟）", "请输入每段最长分钟数（最短 0.5 分钟）：",
-            3.0, 0.5, 60.0, 1
-        )
-        if not ok:
-            return
+    # =========================
+    # Report interval
+    # =========================
+    def set_report_interval(self):
+        from audio import voice_reporter
 
-        max_sec = int(max_min * 60)
+        dlg = QDialog(self)
+        dlg.setWindowTitle("⏱ 语音报时间间隔")
+        dlg.setFixedSize(320, 170)
 
-        print(f"✂️ AI开始裁剪：{file_path}")
-        print(f"⏱ 最短 0.5 分钟，最长 {max_min} 分钟")
-        print(f"📁 输出目录：{AUDIO_BASE_DIR}")
+        layout = QVBoxLayout(dlg)
+        layout.setContentsMargins(18, 18, 18, 14)
+        layout.setSpacing(10)
 
-        try:
-            files = smart_split_audio_to_dir(
-                input_file=file_path,
-                output_dir=AUDIO_BASE_DIR,
-                min_len=30,
-                max_len=max_sec,
-                prefix="讲解"
-            )
+        title = QLabel("设置语音报时间隔（分钟）")
+        title.setAlignment(Qt.AlignCenter)
+        title.setStyleSheet("font-size:14px;font-weight:bold;")
 
-            print("✅ AI裁剪完成，生成文件：")
-            for f in files:
-                print("   ", os.path.basename(f))
+        desc = QLabel("最低 5 分钟")
+        desc.setAlignment(Qt.AlignCenter)
+        desc.setStyleSheet("color:#666;")
 
-            QMessageBox.information(self, "裁剪完成",
-                                    f"已生成 {len(files)} 段音频\n\n保存目录：\n{AUDIO_BASE_DIR}")
-        except Exception as e:
-            QMessageBox.critical(self, "裁剪失败", str(e))
+        spin = QSpinBox()
+        spin.setRange(1, 60)
+        spin.setValue(voice_reporter.REPORT_INTERVAL_MINUTES)
+        spin.setSuffix(" 分钟")
+        spin.setFixedWidth(160)
 
-    # ===== 日志 =====
+        row = QHBoxLayout()
+        row.addStretch()
+        row.addWidget(spin)
+        row.addStretch()
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        btn_cancel = QPushButton("取消")
+        btn_ok = QPushButton("确定")
+        btn_ok.setDefault(True)
+        btn_row.addWidget(btn_cancel)
+        btn_row.addWidget(btn_ok)
+
+        btn_cancel.clicked.connect(dlg.reject)
+        btn_ok.clicked.connect(dlg.accept)
+
+        layout.addWidget(title)
+        layout.addWidget(desc)
+        layout.addLayout(row)
+        layout.addStretch(1)
+        layout.addLayout(btn_row)
+
+        if dlg.exec() == QDialog.Accepted:
+            val = spin.value()
+            if val < 1:
+                QMessageBox.warning(self, "时间设置无效", "⏱ 报时间隔不能小于 5 分钟\n\n系统最低限制为 5 分钟。")
+                return
+
+            voice_reporter.REPORT_INTERVAL_MINUTES = val
+            voice_reporter.save_report_interval(val)
+            self.btn_report_interval.setText(f"⏱ 报时间隔：{val} 分钟")
+            print(f"⏱ 报时间隔已设置为：{val} 分钟")
+
+    # =========================
+    # Logs
+    # =========================
     def clear_log(self):
         self.console.clear()
         print("🧹 日志已清空")
@@ -359,7 +531,9 @@ class MainWindow(QWidget):
         self.console.ensureCursorVisible()
         self.console.repaint()
 
-    # ===== 启动系统 =====
+    # =========================
+    # Start system
+    # =========================
     def start_system(self):
         if self._main_started:
             return
@@ -381,15 +555,15 @@ class MainWindow(QWidget):
                 models = resp.get("data", [])
                 if not models:
                     app_state.current_model_id = None
-                    QMessageBox.warning(self, "缺少音色模型", "当前账号尚未上传任何音色模型，请先添加并设置默认。")
-                    self.show_voice_model_setup_dialog()
+                    QMessageBox.warning(self, "缺少音色模型", "当前账号尚未上传任何音色模型，请先到【音色模型】页面上传并设置默认。")
+                    self._jump_to("音色模型")
                     return
 
                 default_models = [m for m in models if m.get("is_default")]
                 if not default_models:
                     app_state.current_model_id = None
-                    QMessageBox.warning(self, "未设置默认音色", "请先在音色库中设置一个默认主播音色。")
-                    self.show_voice_model_setup_dialog()
+                    QMessageBox.warning(self, "未设置默认音色", "请先到【音色模型】页面设置一个默认主播音色。")
+                    self._jump_to("音色模型")
                     return
 
                 app_state.current_model_id = int(default_models[0]["id"])
@@ -405,270 +579,9 @@ class MainWindow(QWidget):
         t.start()
         print("🚀 系统已启动（后台运行）")
 
-    # ===== 首次配置引导 =====
-    def show_voice_model_setup_dialog(self):
-        from PySide6.QtWidgets import QVBoxLayout, QLabel, QPushButton
-
-        dlg = QDialog(self)
-        dlg.setWindowTitle("首次使用语音功能 - 音色配置")
-        dlg.setFixedSize(1000, 800)
-
-        layout = QVBoxLayout(dlg)
-        layout.setSpacing(16)
-        layout.setContentsMargins(24, 24, 24, 24)
-
-        title = QLabel("🎤 尚未配置默认主播音色")
-        title.setStyleSheet("font-size:18px;font-weight:800;")
-
-        desc = QLabel(
-            "你已开启【语音报时 / 弹幕语音回复】功能，\n"
-            "但当前系统中还没有可用的默认音色模型。\n\n"
-            "请先完成以下步骤：\n"
-            "1. 添加一个主播音色模型\n"
-            "2. 设置为默认音色\n\n"
-            "配置完成后即可启动系统。"
-        )
-        desc.setStyleSheet("color:#666; line-height:22px;")
-
-        panel = VoiceModelPanel(
-            base_url=BASE_URL,
-            license_key=self.license_key
-        )
-        panel.setMinimumHeight(220)
-
-        btn_row = QHBoxLayout()
-        btn_row.addStretch()
-
-        btn_ok = QPushButton("已完成配置，继续启动")
-        btn_ok.setFixedHeight(36)
-
-        def check_and_close():
-            mid = getattr(app_state, "current_model_id", None)
-            if not mid or int(mid) <= 0:
-                QMessageBox.warning(dlg, "未完成配置", "请先设置一个默认音色模型。")
-                return
-            dlg.accept()
-            self.start_system()
-
-        btn_ok.clicked.connect(check_and_close)
-
-        btn_row.addWidget(btn_ok)
-
-        layout.addWidget(title)
-        layout.addWidget(desc)
-        layout.addWidget(panel, 1)
-        layout.addLayout(btn_row)
-
-        dlg.exec()
-
-    # ===== 音频排序 =====
-    def handle_reorder_audio(self):
+    def _jump_to(self, menu_name: str):
         try:
-            from config import AUDIO_BASE_DIR, SUPPORTED_AUDIO_EXTS
-            if not confirm_dialog(self, "确认操作",
-                                  f"将对音频目录进行统一补号排序：\n{AUDIO_BASE_DIR}\n\n确定继续？"):
-                return
-
-            renamed = reorder_audio_files(AUDIO_BASE_DIR, SUPPORTED_AUDIO_EXTS)
-            print(f"🧹 重新排序完成：重命名 {renamed} 个文件")
-        except Exception as e:
-            print("❌ 重新排序失败：", e)
-
-    # ===== 音频复制 =====
-    def handle_copy_audio(self):
-        from config import AUDIO_BASE_DIR, SUPPORTED_AUDIO_EXTS
-
-        if not os.path.isdir(AUDIO_BASE_DIR):
-            QMessageBox.warning(self, "错误", f"音频目录不存在：\n{AUDIO_BASE_DIR}")
-            return
-
-        raw_name, ok = QInputDialog.getText(
-            self, "按序号复制音频",
-            "请输入源音频文件名（可不带后缀）：\n例如：烟管165 或 烟管165.mp3"
-        )
-        if not ok or not raw_name.strip():
-            return
-        raw_name = raw_name.strip()
-
-        count, ok = QInputDialog.getInt(self, "复制数量", "请输入需要生成的份数：", 10, 1, 9999)
-        if not ok:
-            return
-
-        box = QMessageBox(self)
-        box.setWindowTitle("命名冲突处理方式")
-        box.setText("如果目标序号已存在，如何处理？")
-
-        btn_auto = box.addButton("自动续号（不覆盖）", QMessageBox.AcceptRole)
-        btn_force = box.addButton("强制覆盖原文件", QMessageBox.DestructiveRole)
-        btn_cancel = box.addButton("取消操作", QMessageBox.RejectRole)
-
-        box.exec()
-        clicked = box.clickedButton()
-
-        if clicked == btn_cancel:
-            return
-        overwrite = (clicked == btn_force)
-
-        base_no_ext = os.path.splitext(raw_name)[0]
-        src_file = None
-        suffix = None
-
-        for ext in SUPPORTED_AUDIO_EXTS:
-            p = os.path.join(AUDIO_BASE_DIR, base_no_ext + ext)
-            if os.path.exists(p):
-                src_file = p
-                suffix = ext
-                break
-
-        if not src_file:
-            QMessageBox.warning(self, "未找到源文件",
-                                f"未在目录中找到：{base_no_ext} + {SUPPORTED_AUDIO_EXTS}")
-            return
-
-        m = re.match(r"^(.*?)(\d+)$", base_no_ext)
-        if not m:
-            QMessageBox.warning(self, "文件名格式不正确",
-                                "音频文件名必须以数字结尾，例如：烟管165、讲解03")
-            return
-
-        prefix = m.group(1)
-        num_str = m.group(2)
-        width = len(num_str)
-
-        pat = re.compile(rf"^{re.escape(prefix)}(\d+){re.escape(suffix)}$", re.IGNORECASE)
-        nums = []
-        for fn in os.listdir(AUDIO_BASE_DIR):
-            mm = pat.match(fn)
-            if mm:
-                nums.append(int(mm.group(1)))
-
-        start_index = max(nums) + 1 if nums else int(num_str) + 1
-        end_index = start_index + count - 1
-        width = max(width, len(str(end_index)))
-
-        created, skipped = 0, 0
-        for n in range(start_index, start_index + count):
-            n_str = str(n).zfill(width)
-            dst_name = f"{prefix}{n_str}{suffix}"
-            dst_path = os.path.join(AUDIO_BASE_DIR, dst_name)
-
-            if os.path.exists(dst_path) and not overwrite:
-                skipped += 1
-                continue
-
-            shutil.copy2(src_file, dst_path)
-            created += 1
-
-        QMessageBox.information(
-            self, "复制完成",
-            f"源文件：{os.path.basename(src_file)}\n"
-            f"生成范围：{prefix}{str(start_index).zfill(width)} ~ {prefix}{str(end_index).zfill(width)}\n\n"
-            f"成功生成：{created} 个\n"
-            f"跳过：{skipped} 个"
-        )
-
-        print(f"📁 音频复制完成：{prefix}{start_index}~{end_index}，生成 {created} 个，跳过 {skipped} 个")
-
-    # ===== 音频检查 =====
-    def handle_check_audio(self):
-        try:
-            from config import AUDIO_BASE_DIR, SUPPORTED_AUDIO_EXTS
-            from core.keyword_io import load_keywords
-            from core.audio_tools import scan_audio_prefixes
-
-            keywords = load_keywords()
-            keyword_prefixes = set(keywords.keys())
-            audio_prefixes = scan_audio_prefixes(AUDIO_BASE_DIR, SUPPORTED_AUDIO_EXTS)
-
-            reserved_prefixes = {"讲解", "关注", "点赞", "下单"}
-            audio_prefixes = {p for p in audio_prefixes if p not in reserved_prefixes}
-
-            no_audio = sorted(keyword_prefixes - audio_prefixes)
-            no_keyword = sorted(audio_prefixes - keyword_prefixes)
-            added = []
-
-            for p in no_keyword:
-                keywords[p] = {"priority": 0, "must": [], "any": [], "deny": [], "prefix": p}
-                added.append(p)
-
-            if added:
-                self.keyword_panel.new_added_prefixes = set(added)
-                self.keyword_panel.data = keywords
-                self.keyword_panel.refresh_prefix_list()
-
-            msg = []
-            if no_audio:
-                msg.append("以下分类缺少对应音频：\n" + "、".join(no_audio))
-            if added:
-                msg.append("检测到新音频前缀：\n" + "、".join(added))
-            if not msg:
-                msg.append("关键词与音频完全匹配，无需修复。")
-
-            confirm_dialog(self, "检查结果", "\n\n".join(msg))
-        except Exception as e:
-            confirm_dialog(self, "检查失败", str(e))
-
-    # ===== 报时间隔 =====
-    def set_report_interval(self):
-        from PySide6.QtWidgets import QVBoxLayout, QHBoxLayout, QLabel, QSpinBox, QPushButton
-
-        dlg = QDialog(self)
-        dlg.setWindowTitle("⏱ 语音报时间隔")
-        dlg.setFixedSize(300, 160)
-
-        layout = QVBoxLayout(dlg)
-        layout.setContentsMargins(20, 20, 20, 15)
-        layout.setSpacing(12)
-
-        title = QLabel("设置语音报时间隔")
-        title.setAlignment(Qt.AlignCenter)
-        title.setStyleSheet("font-size:14px;font-weight:bold;")
-
-        desc = QLabel("请输入报时间隔（单位：分钟）")
-        desc.setAlignment(Qt.AlignCenter)
-        desc.setStyleSheet("color:#666;")
-
-        row = QHBoxLayout()
-        spin = QSpinBox()
-        spin.setRange(1, 60)
-        spin.setValue(voice_reporter.REPORT_INTERVAL_MINUTES)
-        spin.setSuffix(" 分钟")
-        spin.setFixedWidth(140)
-
-        row.addStretch()
-        row.addWidget(spin)
-        row.addStretch()
-
-        btn_row = QHBoxLayout()
-        btn_row.addStretch()
-
-        btn_cancel = QPushButton("取消")
-        btn_ok = QPushButton("确定")
-        btn_ok.setDefault(True)
-
-        btn_cancel.clicked.connect(dlg.reject)
-        btn_ok.clicked.connect(dlg.accept)
-
-        btn_row.addWidget(btn_cancel)
-        btn_row.addWidget(btn_ok)
-
-        layout.addWidget(title)
-        layout.addWidget(desc)
-        layout.addLayout(row)
-        layout.addStretch()
-        layout.addLayout(btn_row)
-
-        if dlg.exec() == QDialog.Accepted:
-            val = spin.value()
-
-            if val < 5:
-                QMessageBox.warning(
-                    self, "时间设置无效",
-                    "⏱ 报时间隔不能小于 5 分钟\n\n系统最低限制为 5 分钟。"
-                )
-                return
-
-            voice_reporter.REPORT_INTERVAL_MINUTES = val
-            voice_reporter.save_report_interval(val)
-            self.btn_report_interval.setText(f"⏱ 报时\n{val} 分钟")
-            print(f"⏱ 报时间隔已设置为：{val} 分钟")
+            idx = self._menu_names.index(menu_name)
+            self.side.setCurrentRow(idx)
+        except Exception:
+            pass

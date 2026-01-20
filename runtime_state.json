@@ -1,8 +1,10 @@
 {
   "enable_voice_report": false,
-  "report_interval_minutes": 5,
-  "enable_danmaku_reply": false,
-  "enable_auto_reply": false,
+  "report_interval_minutes": 2,
+  "enable_danmaku_reply": true,
+  "enable_auto_reply": true,
   "license_key": "ZM-2026-01-15-TEST-0003",
-  "expire_time": "2026-02-14 23:59:59"
+  "expire_time": "2026-02-14 23:59:59",
+  "enable_zhuli": false,
+  "zhuli_mode": "A"
 }

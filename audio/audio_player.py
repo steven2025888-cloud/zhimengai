@@ -31,7 +31,7 @@ def play_audio_interruptible(path: str, stop_event: threading.Event, poll=0.05):
         raise FileNotFoundError(path)
 
     data, sr = sf.read(path, dtype='float32')
-    data = apply_wav_gain(path, data)
+    # data = apply_wav_gain(path, data)
 
     sd.play(data, sr)
 

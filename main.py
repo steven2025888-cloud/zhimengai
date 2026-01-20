@@ -31,6 +31,11 @@ def main(license_key: str):
     dispatcher = AudioDispatcher(state)
     state.audio_dispatcher = dispatcher
 
+
+    # ⭐ 启动语音报时线程
+    from audio.voice_reporter import start_reporter_thread
+    start_reporter_thread(dispatcher, state)
+
     # WS 命令路由
     router = WSCommandRouter(state, dispatcher)
 
@@ -50,9 +55,13 @@ def main(license_key: str):
         listener = LiveListener(state=app_state, on_danmaku=on_danmaku, on_event=on_event)
         listener.run(tick=lambda: None)
 
+
+
     def dy_listener_thread():
         dy_listener = DouyinListener(state=app_state, on_danmaku=on_danmaku)
         dy_listener.run(tick=lambda: None)
+
+
 
     # ===== WS 回调 =====
     def on_ws_message(data):
@@ -142,6 +151,7 @@ def main(license_key: str):
                 best_reply = auto_reply
 
         if best_prefix:
+            state.pending_hit = (best_prefix, best_reply)
             print(f"\n🎯 第一轮命中结果：{best_prefix}  分数={best_score}")
             print("================= 关键词匹配结束 =================\n")
             return best_prefix, best_reply
@@ -180,6 +190,8 @@ def main(license_key: str):
         else:
             print("\n🚫 未命中任何关键词分类")
 
+        state.pending_hit = (best_prefix, best_reply)
+
         print("================= 关键词匹配结束 =================\n")
         return best_prefix, best_reply
 
@@ -193,35 +205,61 @@ def main(license_key: str):
         ws.push(nickname, content, 1)
 
         prefix, reply_text = hit_qa_question(content)
-        if prefix:
-            try:
-                wav = folder_manager.pick_next_audio()
-                if wav:
-                    dispatcher.push_random(wav)
-            except Exception as e:
-                print(f"{prefix} 音频触发异常：", e)
+        from audio.audio_picker import pick_by_prefix  # 你 main 顶部本来就 import 了
 
-            # ✅把“自动回复文本”返回给 LiveListener，让它使用捕获到的模板去回消息
-            # 说明：抖音/WS 模拟弹幕没有 m(username) 无法回，这里返回给视频号监听器即可
+        if prefix:
+            # ✅ 命中关键词先记录，便于日志/兜底/排查
+            state.pending_hit = (prefix, reply_text)
+
+            # ✅ 全局弹幕语音开关：开了才播
+            if getattr(state, "enable_danmaku_reply", False):
+                try:
+                    wav = pick_by_prefix(prefix)  # 按 prefix 去找对应音频
+                    if wav:
+                        dispatcher.push_anchor_keyword(wav)   # push_size -> push_anchor_keyword
+
+                        print(f"🔊 弹幕语音触发：prefix={prefix} wav={wav}")
+                    else:
+                        print(f"⚠️ 未找到关键词音频：prefix={prefix}（请检查音频目录/命名）")
+                except Exception as e:
+                    print(f"❌ 关键词语音触发异常：prefix={prefix} err={e}")
+            else:
+                print(f"💤 弹幕语音回复未开启：prefix={prefix}（仅命中不播语音）")
+
             return reply_text
 
         return ""
+
+    app_state.on_danmaku_cb = on_danmaku
+    print("🧪 本地弹幕测试回调已注册：app_state.on_danmaku_cb")
 
     def on_event(nickname: str, content: str, type_: int):
         ws.push(nickname, content, type_)
 
     # ===== 随机讲解线程 =====
     def random_push_loop():
+        """轮播：只有在没有任何高优先级任务时才 push random。"""
         while True:
             try:
-                if state.live_ready and not dispatcher.current_playing and dispatcher.q.empty():
-                    wav = folder_manager.pick_next_audio()
-                    if wav:
-                        dispatcher.push_random(wav)
+                if not app_state.enabled:
+                    time.sleep(0.3)
+                    continue
+
+                # 有插播/报时排队时，不要推轮播
+                if dispatcher.has_pending():
+                    time.sleep(0.2)
+                    continue
+
+                fm = getattr(app_state, "folder_manager", None)
+                if fm:
+                    p = fm.pick_next_audio()
+                    if p:
+                        dispatcher.push_random(p)
+                time.sleep(0.2)
             except Exception as e:
                 print("随机讲解异常：", e)
+                time.sleep(0.5)
 
-            time.sleep(RANDOM_PUSH_INTERVAL)
 
     threading.Thread(target=random_push_loop, daemon=True).start()
 
