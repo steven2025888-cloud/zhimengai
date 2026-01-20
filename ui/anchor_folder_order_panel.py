@@ -1,143 +1,314 @@
+# ui/anchor_folder_order_panel.py
+import os
+import sys
+import json
+from pathlib import Path
+
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QListWidget, QPushButton, QHBoxLayout, QMessageBox,
-    QLabel, QToolButton
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QListWidget, QPushButton,
+    QMessageBox, QToolButton, QFileDialog
 )
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QFont
+from PySide6.QtCore import Qt, QSize
+from PySide6.QtGui import QFont, QIcon
 
 from audio.folder_order_manager import FolderOrderManager
+from core.state import app_state
+from config import AUDIO_BASE_DIR
+
+
+def _open_in_file_manager(path: str):
+    p = os.path.abspath(path)
+    if sys.platform.startswith("win"):
+        os.startfile(p)  # type: ignore
+    elif sys.platform == "darwin":
+        os.system(f'open "{p}"')
+    else:
+        os.system(f'xdg-open "{p}"')
 
 
 class AnchorFolderOrderPanel(QWidget):
     """
-    主播讲解文件夹排序面板（拖拽 + 上下箭头）
+    主播设置：音频目录选择 + 讲解文件夹播放顺序
+    兼容旧版 FolderOrderManager（没有 set_base_dir 的情况也能跑）
     """
-    def __init__(self, parent=None):
+
+    def __init__(self, parent=None, resource_path_func=None, save_flag_cb=None):
         super().__init__(parent)
-        self.manager = FolderOrderManager()
+        self._resource_path = resource_path_func
+        self._save_flag = save_flag_cb
+
+        # 目录：默认 AUDIO_BASE_DIR，可由用户选择并持久化
+        default_dir = str(AUDIO_BASE_DIR)
+        cur_dir = getattr(app_state, "anchor_audio_dir", "") or default_dir
+        self._apply_anchor_dir_to_state(cur_dir, persist=False)
 
         self._last_saved_order: list[str] = []
         self._dirty = False
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(8)
+        # ✅ 创建 manager（兼容旧实现）
+        self.manager = self._build_manager_for_dir(self.anchor_audio_dir)
+        app_state.folder_manager = self.manager  # 始终让播放用最新的
 
-        # ===== 标题 =====
+        # ===== UI =====
+        root = QVBoxLayout(self)
+        root.setContentsMargins(10, 10, 10, 10)
+        root.setSpacing(8)
+
         top_row = QHBoxLayout()
-        title = QLabel("主播讲解播放顺序")
+        lbl_title = QLabel("主播设置")
         f = QFont()
         f.setBold(True)
-        f.setPointSize(11)
-        title.setFont(f)
-
-        top_row.addWidget(title)
+        f.setPointSize(12)
+        lbl_title.setFont(f)
+        top_row.addWidget(lbl_title)
         top_row.addStretch(1)
-        layout.addLayout(top_row)
+        root.addLayout(top_row)
 
-        hint = QLabel("拖拽或使用右侧箭头调整播放顺序，越靠前优先播放")
-        hint.setStyleSheet("color:#666;")
-        layout.addWidget(hint)
+        lbl_desc = QLabel("选择主播音频目录，并设置讲解文件夹轮播顺序（越靠前优先级越高）")
+        lbl_desc.setStyleSheet("color:#93A4B7;")
+        root.addWidget(lbl_desc)
 
-        # ===== 中间区域 =====
+        # ===== 目录行 =====
+        dir_row = QHBoxLayout()
+
+        self.lbl_dir = QLabel("")
+        self.lbl_dir.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.lbl_dir.setStyleSheet("color:#556;")
+
+        self.btn_open_dir = QPushButton("🗂 打开文件夹")
+        self.btn_choose_dir = QPushButton("📁 选择文件夹")
+        self.btn_open_dir.setFixedHeight(34)
+        self.btn_choose_dir.setFixedHeight(34)
+
+        dir_row.addWidget(QLabel("当前目录："))
+        dir_row.addWidget(self.lbl_dir, 1)
+        dir_row.addWidget(self.btn_open_dir)
+        dir_row.addWidget(self.btn_choose_dir)
+        root.addLayout(dir_row)
+
+        self._refresh_dir_label()
+
+        # ===== 状态 =====
+        self.lbl_status = QLabel("")
+        self.lbl_status.setStyleSheet("color:#777;")
+        root.addWidget(self.lbl_status)
+
+        # ===== 列表 + 箭头 =====
         center = QHBoxLayout()
-        layout.addLayout(center, 1)
+        root.addLayout(center, 1)
 
-        # 列表
         self.list = QListWidget()
         self.list.setDragDropMode(QListWidget.InternalMove)
         self.list.setDefaultDropAction(Qt.MoveAction)
         self.list.setSelectionMode(QListWidget.SingleSelection)
+        self.list.setToolTip("提示：按住某一项拖动即可改变顺序")
         center.addWidget(self.list, 1)
 
-        # 右侧箭头
         arrow_col = QVBoxLayout()
-        arrow_col.setSpacing(6)
+        arrow_col.setSpacing(8)
+        arrow_col.setAlignment(Qt.AlignTop)
         center.addLayout(arrow_col)
 
-        from PySide6.QtGui import QIcon
-        from PySide6.QtCore import QSize
-        import os
-
-        icon_up = QIcon(os.path.join("img", "MingcuteUpFill.svg"))
-        icon_down = QIcon(os.path.join("img", "MingcuteDownFill.svg"))
-
         self.btn_up = QToolButton()
-        self.btn_up.setIcon(icon_up)
-        self.btn_up.setIconSize(QSize(20, 20))
-        self.btn_up.setFixedSize(36, 36)
-        self.btn_up.setToolTip("向上移动")
-        self.btn_up.setStyleSheet("""
-        QToolButton {
-            border-radius: 6px;
-            background: #F3F6FA;
-        }
-        QToolButton:hover {
-            background: #E3E9F3;
-        }
-        QToolButton:pressed {
-            background: #D6E0F0;
-        }
-        """)
-
         self.btn_down = QToolButton()
-        self.btn_down.setIcon(icon_down)
-        self.btn_down.setIconSize(QSize(20, 20))
-        self.btn_down.setFixedSize(36, 36)
-        self.btn_down.setToolTip("向下移动")
-        self.btn_down.setStyleSheet("""
-        QToolButton {
-            border-radius: 6px;
-            background: #F3F6FA;
-        }
-        QToolButton:hover {
-            background: #E3E9F3;
-        }
-        QToolButton:pressed {
-            background: #D6E0F0;
-        }
-        """)
+        self._setup_arrow_buttons()
 
         arrow_col.addWidget(self.btn_up)
         arrow_col.addWidget(self.btn_down)
         arrow_col.addStretch(1)
 
         # ===== 底部按钮 =====
-        btn_row = QHBoxLayout()
+        bottom = QHBoxLayout()
         self.btn_save = QPushButton("💾 保存并应用排序")
         self.btn_reload = QPushButton("🔄 重新扫描文件夹")
+        self.btn_save.setEnabled(False)
 
-        btn_row.addWidget(self.btn_save)
-        btn_row.addWidget(self.btn_reload)
-        btn_row.addStretch(1)
-        layout.addLayout(btn_row)
+        bottom.addWidget(self.btn_save)
+        bottom.addWidget(self.btn_reload)
+        bottom.addStretch(1)
+        root.addLayout(bottom)
 
-        # 事件
+        # ===== 事件 =====
+        self.btn_choose_dir.clicked.connect(self.choose_dir)
+        self.btn_open_dir.clicked.connect(self.open_dir)
+
         self.btn_up.clicked.connect(self.move_up)
         self.btn_down.clicked.connect(self.move_down)
+
         self.btn_save.clicked.connect(self.save_order)
         self.btn_reload.clicked.connect(self.reload_folders)
 
-        self.list.model().rowsMoved.connect(self._mark_dirty)
+        model = self.list.model()
+        model.rowsMoved.connect(self._on_order_changed)
+        model.rowsInserted.connect(self._on_order_changed)
+        model.rowsRemoved.connect(self._on_order_changed)
 
-        self.refresh(set_saved_snapshot=True)
+        self.reload_folders(set_saved_snapshot=True)
 
-    # ---------------- 核心逻辑 ----------------
+    # ------------------- 目录 -------------------
 
-    def refresh(self, set_saved_snapshot=False):
-        self.list.clear()
-        for name in getattr(self.manager, "folders", []) or []:
-            self.list.addItem(name)
+    @property
+    def anchor_audio_dir(self) -> str:
+        return getattr(app_state, "anchor_audio_dir", str(AUDIO_BASE_DIR))
 
-        if set_saved_snapshot:
-            self._last_saved_order = self.get_current_order()
-            self._dirty = False
+    def _apply_anchor_dir_to_state(self, path: str, persist: bool = True):
+        p = Path(path).expanduser().resolve()
+        try:
+            p.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            p = Path(str(AUDIO_BASE_DIR)).expanduser().resolve()
+            p.mkdir(parents=True, exist_ok=True)
 
-    def get_current_order(self):
+        app_state.anchor_audio_dir = str(p)
+
+        if persist and callable(self._save_flag):
+            self._save_flag("anchor_audio_dir", str(p))
+
+    def _refresh_dir_label(self):
+        self.lbl_dir.setText(self.anchor_audio_dir)
+
+    def choose_dir(self):
+        picked = QFileDialog.getExistingDirectory(self, "选择主播音频目录", self.anchor_audio_dir)
+        if not picked:
+            return
+
+        self._apply_anchor_dir_to_state(picked, persist=True)
+        self._refresh_dir_label()
+
+        # ✅ 切目录：重建 manager（兼容旧版，没有 set_base_dir 也可）
+        self.manager = self._build_manager_for_dir(self.anchor_audio_dir)
+        app_state.folder_manager = self.manager
+
+        self.reload_folders(set_saved_snapshot=True)
+        QMessageBox.information(self, "已切换目录", f"主播音频目录已更新：\n{self.anchor_audio_dir}")
+
+    def open_dir(self):
+        try:
+            _open_in_file_manager(self.anchor_audio_dir)
+        except Exception as e:
+            QMessageBox.warning(self, "打开失败", str(e))
+
+    # ------------------- manager 兼容层 -------------------
+
+    def _order_file(self, base_dir: str) -> str:
+        return os.path.join(base_dir, "_folder_order.json")
+
+    def _scan_folders(self, base_dir: str) -> list[str]:
+        if not os.path.isdir(base_dir):
+            return []
+        return sorted([
+            f for f in os.listdir(base_dir)
+            if os.path.isdir(os.path.join(base_dir, f))
+        ])
+
+    def _load_order_for_dir(self, base_dir: str) -> list[str]:
+        all_folders = self._scan_folders(base_dir)
+        of = self._order_file(base_dir)
+
+        if os.path.exists(of):
+            try:
+                with open(of, "r", encoding="utf-8") as f:
+                    saved = json.load(f) or []
+                folders = [x for x in saved if x in all_folders]
+                for x in all_folders:
+                    if x not in folders:
+                        folders.append(x)
+                return folders
+            except Exception:
+                return all_folders
+        return all_folders
+
+    def _save_order_for_dir(self, base_dir: str, order: list[str]):
+        of = self._order_file(base_dir)
+        with open(of, "w", encoding="utf-8") as f:
+            json.dump(order, f, ensure_ascii=False, indent=2)
+
+    def _build_manager_for_dir(self, base_dir: str):
+        """
+        兼容你现有 FolderOrderManager：
+        - 如果有 set_base_dir()，直接用
+        - 如果没有，就：实例化后挂上 base_dir + folders + 自己的 load/save
+        """
+        m = FolderOrderManager()
+
+        # 新版：有 set_base_dir
+        if hasattr(m, "set_base_dir"):
+            try:
+                m.set_base_dir(base_dir)
+                return m
+            except Exception:
+                pass
+
+        # 旧版：没有 set_base_dir，做兼容绑定
+        m.base_dir = base_dir  # 给 pick_next_audio 可能用到（如果你代码里用）
+        m.folders = self._load_order_for_dir(base_dir)
+
+        def _load():
+            m.folders = self._load_order_for_dir(base_dir)
+
+        def _save(order: list[str]):
+            self._save_order_for_dir(base_dir, order)
+            m.folders = order
+            if hasattr(m, "index"):
+                m.index = 0
+
+        # 覆盖到对象上
+        m.load = _load  # type: ignore
+        m.save = _save  # type: ignore
+
+        return m
+
+    # ------------------- SVG 按钮 -------------------
+
+    def _icon_path(self, rel_path: str) -> str:
+        if callable(self._resource_path):
+            return self._resource_path(rel_path)
+        return os.path.join(os.path.abspath("."), rel_path)
+
+    def _setup_arrow_buttons(self):
+        up_svg = self._icon_path(os.path.join("img", "MingcuteUpFill.svg"))
+        down_svg = self._icon_path(os.path.join("img", "MingcuteDownFill.svg"))
+
+        if os.path.exists(up_svg):
+            self.btn_up.setIcon(QIcon(up_svg))
+        else:
+            self.btn_up.setText("↑")
+
+        if os.path.exists(down_svg):
+            self.btn_down.setIcon(QIcon(down_svg))
+        else:
+            self.btn_down.setText("↓")
+
+        self.btn_up.setToolTip("向上移动")
+        self.btn_down.setToolTip("向下移动")
+
+        for b in (self.btn_up, self.btn_down):
+            b.setIconSize(QSize(18, 18))
+            b.setFixedSize(36, 36)
+            b.setStyleSheet("""
+                QToolButton { border-radius: 8px; background: #F3F6FA; }
+                QToolButton:hover { background: #E6EDF7; }
+                QToolButton:pressed { background: #D6E3F5; }
+            """)
+
+    # ------------------- 排序/状态 -------------------
+
+    def get_current_order(self) -> list[str]:
         return [self.list.item(i).text() for i in range(self.list.count())]
 
-    def _mark_dirty(self, *args):
-        self._dirty = True
+    def _refresh_status(self):
+        order = self.get_current_order()
+        extra = "（有未保存更改）" if self._dirty else ""
+        self.lbl_status.setText(f"当前目录共 {len(order)} 个文件夹 {extra}".strip())
+
+    def _set_dirty(self, dirty: bool):
+        self._dirty = bool(dirty)
+        self.btn_save.setEnabled(self._dirty)
+        self._refresh_status()
+
+    def _on_order_changed(self, *args, **kwargs):
+        cur = self.get_current_order()
+        self._set_dirty(cur != self._last_saved_order)
 
     def move_up(self):
         row = self.list.currentRow()
@@ -146,7 +317,7 @@ class AnchorFolderOrderPanel(QWidget):
         item = self.list.takeItem(row)
         self.list.insertItem(row - 1, item)
         self.list.setCurrentRow(row - 1)
-        self._dirty = True
+        self._on_order_changed()
 
     def move_down(self):
         row = self.list.currentRow()
@@ -155,29 +326,36 @@ class AnchorFolderOrderPanel(QWidget):
         item = self.list.takeItem(row)
         self.list.insertItem(row + 1, item)
         self.list.setCurrentRow(row + 1)
-        self._dirty = True
+        self._on_order_changed()
 
-    def save_order(self):
-        order = self.get_current_order()
-        if not order:
-            QMessageBox.warning(self, "无法保存", "没有可保存的文件夹顺序。")
-            return
-
-        self.manager.save(order)
-        self._last_saved_order = order[:]
-        self._dirty = False
-        QMessageBox.information(self, "保存成功", "主播讲解文件夹播放顺序已生效。")
-
-    def reload_folders(self):
-        if self._dirty:
+    def reload_folders(self, set_saved_snapshot: bool = False):
+        if self._dirty and not set_saved_snapshot:
             r = QMessageBox.question(
                 self, "确认重新扫描？",
-                "当前顺序尚未保存，重新扫描会丢失排序，是否继续？",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.No
+                "你有未保存的排序。\n重新扫描会从磁盘重新读取列表，可能覆盖当前顺序。\n\n仍要继续吗？",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No
             )
             if r != QMessageBox.Yes:
                 return
 
         self.manager.load()
-        self.refresh(set_saved_snapshot=True)
+        self.list.clear()
+        for name in getattr(self.manager, "folders", []) or []:
+            self.list.addItem(name)
+
+        if set_saved_snapshot:
+            self._last_saved_order = self.get_current_order()
+            self._set_dirty(False)
+        else:
+            self._refresh_status()
+
+    def save_order(self):
+        order = self.get_current_order()
+        if not order:
+            QMessageBox.warning(self, "无法保存", "列表为空，无法保存顺序。")
+            return
+
+        self.manager.save(order)
+        self._last_saved_order = order[:]
+        self._set_dirty(False)
+        QMessageBox.information(self, "保存成功", "文件夹顺序已保存，下次播放将按此顺序轮播。")

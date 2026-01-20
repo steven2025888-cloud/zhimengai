@@ -29,9 +29,22 @@ def main(license_key: str):
     dispatcher = AudioDispatcher(state)
     state.audio_dispatcher = dispatcher
 
+    # =========================
+    # ✅ 关键修复：启动就允许播放（不再依赖首次弹幕）
+    # =========================
+    state.enabled = True  # 确保 random_push_loop 不会一直 continue
+    state.live_ready = True  # ✅ 关键：否则 push_random 直接 return
+
+    # ✅ 确保 folder_manager 一开始就有（否则 random_push_loop 可能 fm 为 None）
+    from config import AUDIO_BASE_DIR
+    from audio.folder_order_manager import FolderOrderManager
+    anchor_dir = getattr(state, "anchor_audio_dir", None) or str(AUDIO_BASE_DIR)
+    state.folder_manager = FolderOrderManager(anchor_dir)
+
     # ⭐ 启动语音报时线程
     from audio.voice_reporter import start_reporter_thread
     start_reporter_thread(dispatcher, state)
+
 
     # WS 命令路由
     router = WSCommandRouter(state, dispatcher)
@@ -362,6 +375,13 @@ def main(license_key: str):
 
     # ===== 随机讲解线程 =====
     def random_push_loop():
+
+        from core.state import app_state
+        fm = getattr(app_state, "folder_manager", None)
+        print("🔎 runtime.anchor_audio_dir =", getattr(app_state, "anchor_audio_dir", None))
+        print("🔎 folder_manager =", type(fm), "base_dir =", getattr(fm, "base_dir", None), "AUDIO_BASE_DIR =",
+              __import__("config").AUDIO_BASE_DIR)
+
         """轮播：只有在没有任何高优先级任务时才 push random。"""
         while True:
             try:

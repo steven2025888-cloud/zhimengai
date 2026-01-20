@@ -7,7 +7,7 @@
   "expire_time": "2026-02-14 23:59:59",
   "enable_zhuli": false,
   "zhuli_mode": "B",
-  "var_pitch_enabled": true,
+  "var_pitch_enabled": false,
   "var_apply_anchor": true,
   "var_apply_zhuli": true,
   "var_apply_random": false,
@@ -22,5 +22,6 @@
   "var_speed_sec_min": 10,
   "var_speed_sec_max": 20,
   "var_speed_delta": "+0~+20",
-  "var_pitch_delta": "-50~+50"
+  "var_pitch_delta": "-50~+50",
+  "anchor_audio_dir": "C:\\Users\\111\\Desktop\\zhimoAI\\zhubo_audio"
 }

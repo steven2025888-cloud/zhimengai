@@ -352,19 +352,34 @@ class AudioDispatcher:
         return []
 
     def _scan_folder_audio(self, folder):
+        from pathlib import Path
+
         try:
-            folder_p = folder if hasattr(folder, "iterdir") else None
-            if folder_p is None:
-                from pathlib import Path
-                folder_p = Path(folder)
+            # folder 可能是 Path，也可能是 "不挑柴" 这种名字
+            if hasattr(folder, "iterdir"):
+                folder_p = folder
+            else:
+                folder_s = str(folder)
+                p = Path(folder_s)
+
+                # ✅ 如果是相对路径：基于 folder_manager.base_dir 拼成绝对路径
+                if not p.is_absolute():
+                    fm = getattr(self.state, "folder_manager", None)
+                    base_dir = getattr(fm, "base_dir", None)
+                    if base_dir:
+                        p = Path(base_dir) / folder_s
+                folder_p = p
+
+            if not folder_p.exists() or not folder_p.is_dir():
+                return []
+
+            return [
+                str(p)
+                for p in folder_p.iterdir()
+                if p.is_file() and p.suffix.lower() in (".mp3", ".wav", ".aac", ".m4a", ".flac", ".ogg")
+            ]
         except Exception:
             return []
-
-        return [
-            str(p)
-            for p in folder_p.iterdir()
-            if p.is_file() and p.suffix.lower() in (".mp3", ".wav", ".aac", ".m4a", ".flac", ".ogg")
-        ]
 
     def _folder_cycle_loop(self):
         while True:
@@ -519,6 +534,7 @@ class AudioDispatcher:
         return None
 
     def process_once(self):
+
         if not self.state.enabled or not self.state.live_ready:
             return
         if self.current_playing:
@@ -580,9 +596,6 @@ class AudioDispatcher:
                 print("🎲 播放轮播音频：", play_path)
                 self.stop_event.clear()
                 play_audio_interruptible(play_path, self.stop_event)
-
-            if cmd.on_finished:
-                cmd.on_finished()
 
             # ✅ 清理临时文件
             if tmp_to_cleanup:

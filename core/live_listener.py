@@ -92,12 +92,12 @@ def _lower_headers(h: Dict[str, str]) -> Dict[str, str]:
 
 class LiveListener:
     """
-    视频号监听器（稳定版）：
+    视频号监听器（稳定版 + 抖音同款 storage_state 登录缓存）：
     - 监听直播控制台
-    - 抓 live/msg 的参数并推导 wx_post_url
-    - 抓管理员手动发送的 post_live_app_msg，并保存其 headers 模板（更稳）
-    - 调用 on_danmaku（只在 main 里命中关键词+语音）
-    - on_danmaku 返回 reply_text 后，这里负责发文字（enable_auto_reply 控制）
+    - 抓 live/msg 参数并推导 wx_post_url
+    - 抓管理员手动发送的 post_live_app_msg，保存 headers 模板（更稳）
+    - on_danmaku 做关键词/语音；这里负责发文字（enable_auto_reply 控制）
+    - 登录缓存：STATE_FILE（Path），第一次扫码，进入 LIVE_URL_PREFIX 后自动保存
     """
 
     def __init__(
@@ -105,7 +105,7 @@ class LiveListener:
         state: AppState,
         on_danmaku: Callable[[str, str], str],
         on_event: Callable[[str, str, int], None],
-        hit_qa_question=None,  # 兼容旧构造，不使用
+        hit_qa_question=None,
     ):
         self.state = state
         self.on_danmaku = on_danmaku
@@ -117,11 +117,9 @@ class LiveListener:
         if not hasattr(self.state, "live_ready"):
             self.state.live_ready = False
 
-        # ✅ 分离去重：避免与抖音 seen_seq 混用
         if not hasattr(self.state, "wx_seen_seq"):
             self.state.wx_seen_seq = set()
 
-        # wx 参数缓存
         for k, v in {
             "wx_post_url": None,
             "wx_liveCookies": None,
@@ -135,10 +133,90 @@ class LiveListener:
         if not hasattr(self.state, "wx_reply_cooldown"):
             self.state.wx_reply_cooldown = {}
 
-        # ✅ 新增：保存“管理员手动发消息”时的真实 headers 模板
         if not hasattr(self.state, "wx_post_headers_template"):
             self.state.wx_post_headers_template = {}
 
+    # ===== 登录缓存േഴ്：抖音同款 =====
+    def _create_context(self, browser):
+        state_path = str(STATE_FILE)
+        if os.path.exists(state_path):
+            print("🔐 使用视频号登录缓存：", state_path, "size=", os.path.getsize(state_path))
+            ctx = browser.new_context(storage_state=state_path, no_viewport=True)
+        else:
+            print("🆕 未发现视频号登录缓存，需要扫码登录：", state_path)
+            ctx = browser.new_context(no_viewport=True)
+
+        # ✅ 关键：启动就打印当前 cookies 数量，立刻判断“加载到底生效没”
+        try:
+            cks = ctx.cookies(["https://channels.weixin.qq.com"])
+            print("🍪 启动后 cookies(channels.weixin.qq.com) =", len(cks))
+        except Exception as e:
+            print("⚠️ 读取 cookies 失败：", e)
+
+        return ctx
+
+    def _is_logged_in(self, page: Page) -> bool:
+        """更贴近真实：进入 HOME 或 liveBuild 都算已登录；只要不是登录页"""
+        url = (_get_real_url(page) or "").lower()
+
+        if url.startswith(LIVE_URL_PREFIX.lower()):
+            return True
+        if (HOME_URL or "").lower() and url.startswith((HOME_URL or "").lower()):
+            return True
+
+        # 兜底排除登录页
+        if "login" in url or "passport" in url or "auth" in url:
+            return False
+
+        # 如果已经在 channels.weixin.qq.com 域且不是登录页，一般也算登录完成
+        if "channels.weixin.qq.com" in url:
+            return True
+
+        return False
+
+    def _maybe_save_login_state(self, context, page):
+        if getattr(self, "_login_state_saved", False):
+            return
+
+        if not self._is_logged_in(page):
+            return
+
+        # ✅ 再保险：必须确认 cookie 非空，才允许保存（避免空态覆盖）
+        try:
+            cks = context.cookies(["https://channels.weixin.qq.com"])
+            if not cks:
+                # 很多“看起来登录了但没 cookie”的情况（比如还没跳转完成）
+                return
+        except Exception:
+            # cookies 读失败也别保存
+            return
+
+        try:
+            state_path = str(STATE_FILE)
+            tmp = state_path + ".tmp"
+
+            context.storage_state(path=tmp)
+
+            st = json.load(open(tmp, "r", encoding="utf-8"))
+            cookies = st.get("cookies") if isinstance(st, dict) else None
+            if not (isinstance(cookies, list) and len(cookies) > 0):
+                print("⚠️ storage_state cookies 为空，取消保存，避免空态污染")
+                try:
+                    os.remove(tmp)
+                except Exception:
+                    pass
+                return
+
+            os.replace(tmp, state_path)
+            self._login_state_saved = True
+
+            print("💾 视频号登录态已保存：", state_path, "size=", os.path.getsize(state_path))
+            print("✅ 保存时 cookies =", len(cookies), "url=", _get_real_url(page))
+
+        except Exception as e:
+            print("⚠️ 保存视频号登录态失败：", e)
+
+    # ===== 抓参数/headers =====
     def _handle_request(self, req: Request):
         try:
             if req.method.upper() != "POST":
@@ -162,7 +240,7 @@ class LiveListener:
                     print("✅ 已由 live/msg 推导 wx_post_url =", self.state.wx_post_url)
                 return
 
-            # ✅ 如果抓到了管理员手动发送的 post_live_app_msg，直接存完整 URL（更稳）+ headers 模板
+            # 管理员手动发消息：存完整 URL + headers 模板
             if "mmfinderassistant-bin/live/post_live_app_msg" in url and isinstance(post, dict):
                 self.state.wx_post_url = url
                 self.state.wx_liveCookies = post.get("liveCookies") or self.state.wx_liveCookies
@@ -180,6 +258,7 @@ class LiveListener:
         except Exception as e:
             print("⚠️ _handle_request error:", e)
 
+    # ===== 发送文字回复 =====
     def _send_reply_to_user(self, m: dict, text: str) -> bool:
         if not self._context or not self.state.wx_post_url:
             print("⚠️ 视频号发送条件未就绪（wx_post_url/context缺失）")
@@ -223,7 +302,6 @@ class LiveListener:
         }
 
         try:
-            # ✅ 复用真实 headers 模板（更抗 403/风控）
             tpl = _lower_headers(self.state.wx_post_headers_template or {})
             headers = {"content-type": "application/json"}
 
@@ -245,7 +323,6 @@ class LiveListener:
             print("📨 视频号自动回复 status=", resp.status)
 
             if not (200 <= resp.status < 300):
-                # ✅ 关键：打印失败 body，便于定位鉴权/风控/缺字段
                 try:
                     print("   ↪ resp.text(head800) =", (resp.text() or "")[:800].replace("\n", "\\n"))
                 except Exception:
@@ -279,6 +356,7 @@ class LiveListener:
         else:
             print("❌ 视频号自动回复失败（已打印失败原因）")
 
+    # ===== 监听状态 =====
     def _update_listen_state(self, page: Page, reason: str = ""):
         url = _get_real_url(page)
         should = url.startswith(LIVE_URL_PREFIX)
@@ -288,7 +366,6 @@ class LiveListener:
             self.state.live_ready = True
             print(f"🎬 已进入视频号直播控制台（{reason}）URL={url}")
 
-            # 启动轮播线程（一次）
             try:
                 if getattr(self.state, "audio_dispatcher", None) and not self.state.audio_dispatcher.current_playing:
                     self.state.audio_dispatcher.start_folder_cycle()
@@ -299,68 +376,8 @@ class LiveListener:
             self.state.is_listening = False
             print("🚪 已离开视频号直播页（不中断播放）")
 
-    def _is_logged_in(self, page: Page) -> bool:
-        """只在确认已进入直播控制台/已登录页面时才算登录成功"""
-        url = (_get_real_url(page) or "").lower()
-
-        # ✅ 最稳：进了直播控制台就一定是已登录
-        if (_get_real_url(page) or "").startswith(LIVE_URL_PREFIX):
-            return True
-
-        # ✅ 兜底：排除常见登录页特征（微信经常改，不要只判断 login.html）
-        if "login" in url or "passport" in url or "auth" in url:
-            return False
-
-        # ✅ 如果已经能看到 HOME_URL 域名且不是登录态，一般也算登录成功（按你项目配置）
-        if (HOME_URL or "").lower() in url:
-            return True
-
-        return False
-
-
-
-        print("🆕 未发现有效视频号登录缓存，需要扫码登录")
-        return browser.new_context(no_viewport=True)
-
-    def _maybe_save_login_state(self, context, page):
-        # 已保存过就不重复保存
-        if getattr(self, "_login_state_saved", False):
-            return
-
-        # ✅ 关键：只有确认“已登录”才允许保存，避免把未登录态覆盖掉
-        if not self._is_logged_in(page):
-            return
-
-        # ✅ 再保险：如果还没进入直播控制台，也别保存（防止 HOME_URL 误判）
-        # 你想更严格就只保留这一条：
-        # if not (_get_real_url(page) or "").startswith(LIVE_URL_PREFIX):
-        #     return
-
-        try:
-            # 先写临时文件，避免写一半损坏
-            tmp = STATE_FILE + ".tmp"
-            context.storage_state(path=tmp)
-
-            # 校验 cookies 是否非空再覆盖正式文件
-            st = json.load(open(tmp, "r", encoding="utf-8"))
-            cookies = st.get("cookies") if isinstance(st, dict) else None
-            if not (isinstance(cookies, list) and len(cookies) > 0):
-                print("⚠️ 本次 storage_state cookies 为空，取消覆盖 STATE_FILE，避免空态污染")
-                try:
-                    os.remove(tmp)
-                except Exception:
-                    pass
-                return
-
-            os.replace(tmp, STATE_FILE)
-            self._login_state_saved = True
-            print("💾 视频号登录态已保存：", STATE_FILE)
-
-        except Exception as e:
-            print("⚠️ 保存视频号登录态失败：", e)
-
+    # ===== 处理消息 =====
     def _handle_live_msg_json(self, inner: Dict[str, Any]):
-        # msg_list：弹幕/进场等
         for m in inner.get("msg_list", []):
             seq_raw = m.get("seq")
             if not seq_raw:
@@ -385,7 +402,6 @@ class LiveListener:
             if t == 1:
                 print(f"💬 视频号弹幕｜{nickname}：{content}")
 
-                # 主逻辑：关键词+语音，返回 reply_text
                 reply_text = ""
                 try:
                     reply_text = self.on_danmaku(nickname, content) or ""
@@ -393,13 +409,11 @@ class LiveListener:
                     self.on_danmaku(nickname, content)
                     reply_text = ""
 
-                # 文本自动回复开关
                 if not getattr(self.state, "enable_auto_reply", False):
                     if reply_text.strip():
                         print("💤 文本自动回复已关闭，本次仅命中关键词，不发文字")
                     continue
 
-                # 发文字
                 if reply_text.strip():
                     self._auto_reply_by_text(m, reply_text)
 
@@ -407,7 +421,6 @@ class LiveListener:
                 print(f"👋 进场｜{nickname} 进入直播间")
                 self.on_event(nickname, "进入直播间", 3)
 
-        # app_msg_list：关注/礼物等
         for app_msg in inner.get("app_msg_list", []):
             seq = app_msg.get("seq")
             if seq:
@@ -440,31 +453,21 @@ class LiveListener:
 
         self._handle_live_msg_json(inner)
 
+    # ===== 主循环 =====
     def run(self, tick: Callable[[], None]):
         with sync_playwright() as p:
-            # ✅ 1) 固定一个“微信浏览器档案目录”（持久化）
-            # 建议放到和 STATE_FILE 同目录，打包后也稳定
-            base_dir = os.path.dirname(os.path.abspath(STATE_FILE)) if STATE_FILE else os.getcwd()
-            wx_profile_dir = os.path.join(base_dir, "wx_profile")  # 这个文件夹就是“永久登录档案”
-            os.makedirs(wx_profile_dir, exist_ok=True)
-
-            # ✅ 2) 用持久化模式启动（关键）
-            context = p.chromium.launch_persistent_context(
-                user_data_dir=wx_profile_dir,
+            browser = p.chromium.launch(
                 headless=False,
-                no_viewport=True,
                 args=["--start-maximized", "--disable-blink-features=AutomationControlled"],
             )
 
+            context = self._create_context(browser)
             self._context = context
-
-            # ✅ 3) 拿到页面（持久化模式通常会自带一个 page）
-            page = context.pages[0] if context.pages else context.new_page()
+            page = context.new_page()
 
             page.on("request", self._handle_request)
             page.on("response", self._handle_response)
 
-            # ✅ 4) 直接打开登录页/主页都行。第一次需要扫码，之后基本就免扫码
             start_url = HOME_URL or LOGIN_URL
             try:
                 page.goto(start_url, wait_until="domcontentloaded", timeout=60000)
@@ -478,12 +481,10 @@ class LiveListener:
                 url = _get_real_url(page)
                 if url != last_url:
                     last_url = url
-                    print("🔁 视频号 URL 变化：", url)
-
-                # ❌ 持久化模式下不需要 storage_state 了
-                # self._maybe_save_login_state(context, page)
+                    print("🔁 视频号 URL：", url)
 
                 self._update_listen_state(page, reason="poll")
+                self._maybe_save_login_state(context, page)
+
                 tick()
                 time.sleep(0.3)
-

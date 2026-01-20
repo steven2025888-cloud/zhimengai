@@ -15,14 +15,13 @@ from PySide6.QtGui import QTextCursor, QIcon
 from main import main
 from ui.keyword_panel import KeywordPanel
 from ui.voice_model_panel import VoiceModelPanel
-from ui.folder_order_panel import FolderOrderPanel
 from ui.switch_toggle import SwitchToggle
 from ui.audio_tools_page import AudioToolsPage
 from ui.zhuli_keyword_panel import ZhuliKeywordPanel
 
 from core.state import app_state
 from api.voice_api import get_machine_code
-from config import BASE_URL
+from config import BASE_URL,AUDIO_BASE_DIR
 from ui.anchor_folder_order_panel import AnchorFolderOrderPanel
 
 
@@ -45,9 +44,20 @@ class MainWindow(QWidget):
     def __init__(self, resource_path_func, expire_time: str | None = None, license_key: str = ""):
         super().__init__()
 
+        # 主播音频目录（用户可选，默认 AUDIO_BASE_DIR）
+
         from core.runtime_state import load_runtime_state
 
+
         runtime = load_runtime_state() or {}
+
+        app_state.anchor_audio_dir = str(runtime.get("anchor_audio_dir", str(AUDIO_BASE_DIR)) or str(AUDIO_BASE_DIR))
+        try:
+            os.makedirs(app_state.anchor_audio_dir, exist_ok=True)
+        except Exception:
+            app_state.anchor_audio_dir = str(AUDIO_BASE_DIR)
+
+
 
         app_state.enable_voice_report = bool(runtime.get("enable_voice_report", False))
         app_state.enable_danmaku_reply = bool(runtime.get("enable_danmaku_reply", False))
@@ -79,7 +89,7 @@ class MainWindow(QWidget):
         self.resource_path = resource_path_func
         self.expire_time = expire_time
 
-        self.setWindowTitle("AI直播工具 · 语音调度中控台")
+        self.setWindowTitle("织梦AI直播工具 · 语音调度中控台")
         self.setWindowIcon(QIcon(self.resource_path("logo.ico")))
         self.resize(1480, 760)
 
@@ -104,13 +114,10 @@ class MainWindow(QWidget):
 
         # ===== Top title =====
         top = QHBoxLayout()
-        title = QLabel("AI直播工具")
+        title = QLabel("织梦AI直播工具")
         title.setStyleSheet("font-size: 20px; font-weight: 800;")
-        sub = QLabel("语音调度系统控制台 · 商用推广版")
-        sub.setStyleSheet("color: #93A4B7;")
         top.addWidget(title)
         top.addSpacing(10)
-        top.addWidget(sub)
         top.addStretch(1)
 
         expire_text = self.expire_time or "未知"
@@ -171,6 +178,8 @@ class MainWindow(QWidget):
         self.side.setCurrentRow(0)
 
     def _build_anchor_page(self) -> QWidget:
+        from ui.anchor_folder_order_panel import AnchorFolderOrderPanel
+
         page = QWidget()
         lay = QVBoxLayout(page)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -178,16 +187,22 @@ class MainWindow(QWidget):
 
         title = QLabel("主播设置")
         title.setStyleSheet("font-size:16px;font-weight:800;")
-        desc = QLabel("配置主播轮播讲解顺序与优先级")
+        desc = QLabel("选择主播音频目录，并设置讲解文件夹轮播顺序")
         desc.setStyleSheet("color:#93A4B7;")
 
         lay.addWidget(title)
         lay.addWidget(desc)
 
-        self.anchor_folder_panel = AnchorFolderOrderPanel(self)
-        lay.addWidget(self.anchor_folder_panel, 1)
+        panel = AnchorFolderOrderPanel(
+            parent=self,
+            resource_path_func=self.resource_path,  # 用于 img/*.svg
+            save_flag_cb=self._save_runtime_flag  # 用于保存 anchor_audio_dir
+        )
+        lay.addWidget(panel, 1)
+
 
         return page
+
 
     # =========================
     # Page Builders
@@ -312,12 +327,11 @@ class MainWindow(QWidget):
                 s = s.split("（", 1)[0].strip()
             return s
 
-        def _make_var_block(title: str, key_prefix: str,
+        def _make_var_block(title: str,
                             enabled_attr: str,
                             delta_attr: str,
                             default_delta: str,
                             kind: str):
-
 
             wrap = QWidget()
             v = QVBoxLayout(wrap)
@@ -375,7 +389,7 @@ class MainWindow(QWidget):
             def _save_delta():
                 d = cmb.currentData()
                 setattr(app_state, delta_attr, d)
-                self._save_runtime_flag(f"{key_prefix}_delta", d)
+                self._save_runtime_flag(delta_attr, d)  # ✅ 直接用 delta_attr
 
             cb.toggled.connect(_save_enabled)
             cmb.currentIndexChanged.connect(lambda _=None: _save_delta())
@@ -384,21 +398,21 @@ class MainWindow(QWidget):
 
         # 三组：变调/变音量/变语速
         var_body.addWidget(_make_var_block(
-            "变调节", "var_pitch",
+            "变调节",
             "var_pitch_enabled",
             "var_pitch_delta",
             "-5~+5",
             "pitch",
         ))
         var_body.addWidget(_make_var_block(
-            "变音量", "var_volume",
+            "变音量",
             "var_volume_enabled",
             "var_volume_delta",
             "+0~+10",
             "volume",
         ))
         var_body.addWidget(_make_var_block(
-            "变语速", "var_speed",
+            "变语速",
             "var_speed_enabled",
             "var_speed_delta",
             "+0~+10",
