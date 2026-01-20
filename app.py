@@ -10,7 +10,6 @@ from PySide6.QtCore import QTranslator, QLibraryInfo
 from ui.main_window import MainWindow
 from ui.license_login_dialog import LicenseLoginDialog
 from core.updater import force_check_update_and_exit_if_needed
-from config import AUDIO_BASE_DIR
 import logger_bootstrap
 
 # PyInstaller Playwright

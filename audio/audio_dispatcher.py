@@ -58,13 +58,15 @@ class AudioDispatcher:
         self.folder_cycle_running = False
 
         # ===== 变量调节（运行态缓存）=====
-        self._var_pitch_next_ts = 0.0
-        self._var_speed_next_ts = 0.0
-        self._var_volume_next_ts = 0.0
+        # 你最新需求：不再按“随机多少秒刷新一次”，而是【每段音频】都会随机一个目标值，
+        # 并在该音频内把当前值平滑过渡到目标值；下一段音频再从上一次目标值继续过渡。
+        # 因此这里仅保留“上一次的目标值(=下一段的起点)”。
+        self._cur_pitch_pct = 0      # percent, 例如 -5 ~ +5
+        self._cur_speed_pct = 0      # percent, 例如 +0 ~ +10
+        self._cur_volume_db = 0      # dB, 例如 +0 ~ +10
 
-        self._cur_pitch_pct = 0      # -5 ~ +5（百分比）
-        self._cur_speed_pct = 0      # -5 ~ +5（百分比）
-        self._cur_volume_db = 0      # dB
+        # 为避免极端慢机卡顿：每段音频的平滑过渡拆成多少段（越大越平滑但越慢）
+        self._var_ramp_steps = 5
 
 
 
@@ -96,10 +98,26 @@ class AudioDispatcher:
             mn, mx = mx, mn
         return mn, mx
 
-    def _rand_interval(self, mn: int, mx: int) -> float:
-        if mx < mn:
-            mx = mn
-        return float(random.randint(int(mn), int(mx)))
+    def _ffprobe_bin(self) -> str:
+        return shutil.which("ffprobe") or "ffprobe"
+
+    def _get_duration_sec(self, src_path: str) -> float:
+        """尽量可靠地拿到音频时长（秒）。失败就返回 0。"""
+        try:
+            out = subprocess.check_output(
+                [
+                    self._ffprobe_bin(),
+                    "-v", "error",
+                    "-show_entries", "format=duration",
+                    "-of", "default=noprint_wrappers=1:nokey=1",
+                    src_path,
+                ],
+                stderr=subprocess.STDOUT,
+            )
+            v = float(out.decode("utf-8", "ignore").strip() or "0")
+            return max(0.0, v)
+        except Exception:
+            return 0.0
 
     def _atempo_chain(self, tempo: float) -> str:
         """
@@ -118,86 +136,62 @@ class AudioDispatcher:
         parts.append(tempo)
         return ",".join([f"atempo={p:.6f}" for p in parts])
 
-    def _maybe_update_variations(self):
-        """
-        按“随机秒数”决定何时刷新一次当前 pitch/speed/volume 参数
-        """
-        now = time.time()
-        st = self.state
-
-        # 变调（百分比）
-        if bool(getattr(st, "var_pitch_enabled", False)):
-            if now >= self._var_pitch_next_ts:
-                mn, mx = self._parse_delta_range(str(getattr(st, "var_pitch_delta", "-5~+5")))
-                self._cur_pitch_pct = random.randint(mn, mx)
-                sec_mn = int(getattr(st, "var_pitch_sec_min", 30))
-                sec_mx = int(getattr(st, "var_pitch_sec_max", 40))
-                self._var_pitch_next_ts = now + self._rand_interval(sec_mn, sec_mx)
-
-        # 变语速（百分比）
-        if bool(getattr(st, "var_speed_enabled", False)):
-            if now >= self._var_speed_next_ts:
-                mn, mx = self._parse_delta_range(str(getattr(st, "var_speed_delta", "+0~+10")))
-                self._cur_speed_pct = random.randint(mn, mx)
-                sec_mn = int(getattr(st, "var_speed_sec_min", 70))
-                sec_mx = int(getattr(st, "var_speed_sec_max", 80))
-                self._var_speed_next_ts = now + self._rand_interval(sec_mn, sec_mx)
-
-        # 变音量（dB）
-        if bool(getattr(st, "var_volume_enabled", False)):
-            if now >= self._var_volume_next_ts:
-                mn, mx = self._parse_delta_range(str(getattr(st, "var_volume_delta", "+0~+10")))
-                self._cur_volume_db = random.randint(mn, mx)
-                sec_mn = int(getattr(st, "var_volume_sec_min", 50))
-                sec_mx = int(getattr(st, "var_volume_sec_max", 60))
-                self._var_volume_next_ts = now + self._rand_interval(sec_mn, sec_mx)
-
     def _ffmpeg_bin(self) -> str:
         # 优先用系统 ffmpeg；你如果有自带 ffmpeg，可在这里加路径
         return shutil.which("ffmpeg") or "ffmpeg"
 
-    def _build_ffmpeg_filter(self) -> str | None:
-        """
-        组合 filter：
-        - pitch 用 asetrate+aresample+atempo(补偿)
-        - speed 用 atempo
-        - volume 用 volume=XdB
-        """
+    def _pick_next_targets(self) -> tuple[int, int, int]:
+        """每段音频随机一个目标值（绝对值），并让下一段从上一段目标值继续过渡。"""
+        st = self.state
+
+        # 目标值（absolute）：在 UI 选的范围内随机
+        if bool(getattr(st, "var_pitch_enabled", False)):
+            mn, mx = self._parse_delta_range(str(getattr(st, "var_pitch_delta", "-5~+5")))
+            pitch_t = random.randint(mn, mx)
+        else:
+            pitch_t = self._cur_pitch_pct
+
+        if bool(getattr(st, "var_speed_enabled", False)):
+            mn, mx = self._parse_delta_range(str(getattr(st, "var_speed_delta", "+0~+10")))
+            speed_t = random.randint(mn, mx)
+        else:
+            speed_t = self._cur_speed_pct
+
+        if bool(getattr(st, "var_volume_enabled", False)):
+            mn, mx = self._parse_delta_range(str(getattr(st, "var_volume_delta", "+0~+10")))
+            vol_t = random.randint(mn, mx)
+        else:
+            vol_t = self._cur_volume_db
+
+        return pitch_t, speed_t, vol_t
+
+    def _build_const_filter(self, pitch_pct: int, speed_pct: int, vol_db: int) -> str | None:
+        """构造“常量”滤镜（用于某一小段音频）。"""
         st = self.state
         pitch_on = bool(getattr(st, "var_pitch_enabled", False))
         speed_on = bool(getattr(st, "var_speed_enabled", False))
-        vol_on   = bool(getattr(st, "var_volume_enabled", False))
+        vol_on = bool(getattr(st, "var_volume_enabled", False))
 
         if not (pitch_on or speed_on or vol_on):
             return None
 
-        # 当前值（已由 _maybe_update_variations 维护）
-        pitch_pct = int(getattr(self, "_cur_pitch_pct", 0))
-        speed_pct = int(getattr(self, "_cur_speed_pct", 0))
-        vol_db    = int(getattr(self, "_cur_volume_db", 0))
+        pitch_factor = 1.0 + (int(pitch_pct) / 100.0)
+        speed_factor = 1.0 + (int(speed_pct) / 100.0)
 
-        # 百分比 -> factor
-        pitch_factor = 1.0 + (pitch_pct / 100.0)
-        speed_factor = 1.0 + (speed_pct / 100.0)
-
-        # 合成滤镜
         filters = []
         sr = 44100
 
         if pitch_on:
-            # pitch shift 保持时长：asetrate(sr*pf) -> aresample(sr) -> atempo(1/pf)
+            # pitch shift 保持时长：asetrate(sr*pf) -> aresample(sr) -> atempo(补偿)
             filters.append(f"asetrate={sr}*{pitch_factor:.6f}")
             filters.append(f"aresample={sr}")
-
-            # 如果同时开了 speed：最终 tempo = speed_factor / pitch_factor
             tempo = (speed_factor / pitch_factor) if speed_on else (1.0 / pitch_factor)
             filters.append(self._atempo_chain(tempo))
         elif speed_on:
             filters.append(self._atempo_chain(speed_factor))
 
-        if vol_on and vol_db != 0:
-            # volume 用 dB
-            filters.append(f"volume={vol_db}dB")
+        if vol_on and int(vol_db) != 0:
+            filters.append(f"volume={int(vol_db)}dB")
 
         return ",".join(filters) if filters else None
 
@@ -205,15 +199,88 @@ class AudioDispatcher:
         """
         返回 (play_path, tmp_path_to_cleanup)
         """
-        self._maybe_update_variations()
-        afilter = self._build_ffmpeg_filter()
-        if not afilter:
+        st = self.state
+        pitch_on = bool(getattr(st, "var_pitch_enabled", False))
+        speed_on = bool(getattr(st, "var_speed_enabled", False))
+        vol_on = bool(getattr(st, "var_volume_enabled", False))
+        if not (pitch_on or speed_on or vol_on):
             return src_path, None
+
+        # 本段音频：从“上一段目标值”过渡到“本段目标值”
+        pitch_start, speed_start, vol_start = self._cur_pitch_pct, self._cur_speed_pct, self._cur_volume_db
+        pitch_t, speed_t, vol_t = self._pick_next_targets()
+
+        # 过渡在本段音频内“随机完成”：
+        #  - 可以在开头就完成（0%）
+        #  - 也可以到结束才完成（100%）
+        dur = self._get_duration_sec(src_path)
+        if dur <= 0.05:
+            # 拿不到时长，退化为“直接用目标值”
+            pitch_start, speed_start, vol_start = pitch_t, speed_t, vol_t
+            ramp_end = 0.0
+        else:
+            # 0 ~ 1 的随机，允许非常“突兀”的测试；
+            # 正常使用你也可以改成 random.uniform(0.2, 1.0)
+            frac = random.uniform(0.0, 1.0)
+            ramp_end = dur * frac
+
+        steps = max(1, int(getattr(self, "_var_ramp_steps", 5)))
+        # ramp_end 太小就视为“开头直接跳到目标”
+        if ramp_end <= 0.05:
+            steps = 1
 
         # 输出临时 wav（保证兼容播放）
         tmp = tempfile.NamedTemporaryFile(prefix="var_", suffix=".wav", delete=False)
         tmp_path = tmp.name
         tmp.close()
+
+        # 组装 filter_complex：atrim 分段 + 每段常量滤镜 + concat
+        seg_filters = []
+        seg_labels = []
+        seg_idx = 0
+
+        def _interp(a: float, b: float, t: float) -> float:
+            return a + (b - a) * t
+
+        # 1) 过渡段（拆 steps 段）
+        if steps == 1:
+            # 直接目标值
+            cf = self._build_const_filter(pitch_t, speed_t, vol_t)
+            if cf:
+                seg_filters.append(f"[0:a]{cf}[a0]")
+                seg_labels.append("[a0]")
+            else:
+                seg_filters.append("[0:a]anull[a0]")
+                seg_labels.append("[a0]")
+        else:
+            # ramp_end 以内分段渐变
+            for i in range(steps):
+                s = (ramp_end * i) / steps
+                e = (ramp_end * (i + 1)) / steps
+                # 用“段末插值”更像缓慢靠近
+                tt = (i + 1) / steps
+                p = int(round(_interp(pitch_start, pitch_t, tt)))
+                sp = int(round(_interp(speed_start, speed_t, tt)))
+                vb = int(round(_interp(vol_start, vol_t, tt)))
+                cf = self._build_const_filter(p, sp, vb) or "anull"
+                seg_filters.append(
+                    f"[0:a]atrim=start={s:.6f}:end={e:.6f},asetpts=PTS-STARTPTS,{cf}[a{seg_idx}]"
+                )
+                seg_labels.append(f"[a{seg_idx}]")
+                seg_idx += 1
+
+            # 2) 过渡完成后的剩余段：用目标值
+            if dur > ramp_end + 0.02:
+                cf = self._build_const_filter(pitch_t, speed_t, vol_t) or "anull"
+                seg_filters.append(
+                    f"[0:a]atrim=start={ramp_end:.6f},asetpts=PTS-STARTPTS,{cf}[a{seg_idx}]"
+                )
+                seg_labels.append(f"[a{seg_idx}]")
+                seg_idx += 1
+
+        concat_in = "".join(seg_labels)
+        concat_n = len(seg_labels)
+        filter_complex = ";".join(seg_filters + [f"{concat_in}concat=n={concat_n}:v=0:a=1[aout]"])
 
         cmd = [
             self._ffmpeg_bin(),
@@ -222,15 +289,23 @@ class AudioDispatcher:
             "-vn",
             "-ac", "2",
             "-ar", "44100",
-            "-filter:a", afilter,
-            tmp_path
+            "-filter_complex", filter_complex,
+            "-map", "[aout]",
+            tmp_path,
         ]
 
         try:
             subprocess.run(cmd, check=True)
 
-            # 你可以打开下面这行调试查看每次实际用的 filter
-            print("🎛️ ffmpeg filter:", afilter, "src:", os.path.basename(src_path))
+            # 本段结束：把“目标值”作为下一段的起点
+            self._cur_pitch_pct = int(pitch_t)
+            self._cur_speed_pct = int(speed_t)
+            self._cur_volume_db = int(vol_t)
+
+            # 调试：显示本段从多少到多少
+            print(
+                f"🎛️ 变量调节：pitch {pitch_start}%→{pitch_t}%, speed {speed_start}%→{speed_t}%, volume {vol_start}dB→{vol_t}dB | ramp={ramp_end:.2f}s/{dur:.2f}s | src={os.path.basename(src_path)}"
+            )
             return tmp_path, tmp_path
         except Exception as e:
             try:
@@ -502,9 +577,9 @@ class AudioDispatcher:
                 play_audio_and_wait(play_path)
 
             elif cmd.name == PLAY_RANDOM:
-                print("🎲 播放轮播音频：", cmd.path)
+                print("🎲 播放轮播音频：", play_path)
                 self.stop_event.clear()
-                play_audio_interruptible(cmd.path, self.stop_event)
+                play_audio_interruptible(play_path, self.stop_event)
 
             if cmd.on_finished:
                 cmd.on_finished()

@@ -23,6 +23,8 @@ from ui.zhuli_keyword_panel import ZhuliKeywordPanel
 from core.state import app_state
 from api.voice_api import get_machine_code
 from config import BASE_URL
+from ui.anchor_folder_order_panel import AnchorFolderOrderPanel
+
 
 print = functools.partial(print, flush=True)
 
@@ -54,23 +56,11 @@ class MainWindow(QWidget):
         app_state.zhuli_mode = str(runtime.get("zhuli_mode", "A") or "A").upper()
 
 
-        # ===== 变量调节/音量/语速（随机间隔 + 幅度） =====
-        def _load_range(name: str, default_min: int, default_max: int):
-            mn = int(runtime.get(f"{name}_sec_min", default_min))
-            mx = int(runtime.get(f"{name}_sec_max", default_max))
-            if mn < 1: mn = 1
-            if mx < mn: mx = mn
-            return mn, mx
-
-        # 是否启用
-        app_state.var_pitch_enabled = bool(runtime.get("var_pitch_enabled", False))
-        app_state.var_volume_enabled = bool(runtime.get("var_volume_enabled", False))
-        app_state.var_speed_enabled = bool(runtime.get("var_speed_enabled", False))
-
-        # 随机间隔（秒）
-        app_state.var_pitch_sec_min, app_state.var_pitch_sec_max = _load_range("var_pitch", 30, 40)
-        app_state.var_volume_sec_min, app_state.var_volume_sec_max = _load_range("var_volume", 50, 60)
-        app_state.var_speed_sec_min, app_state.var_speed_sec_max = _load_range("var_speed", 70, 80)
+        # ===== 变量调节/音量/语速（按“每段音频”随机目标值 + 平滑过渡） =====
+        # ✅ 默认都打开（若 runtime_state.json 没写过开关，则默认 True；写过就尊重写过的值）
+        app_state.var_pitch_enabled = bool(runtime.get("var_pitch_enabled", True))
+        app_state.var_volume_enabled = bool(runtime.get("var_volume_enabled", True))
+        app_state.var_speed_enabled = bool(runtime.get("var_speed_enabled", True))
 
         # 幅度档位（用字符串存，UI combobox 选择）
         app_state.var_pitch_delta = str(runtime.get("var_pitch_delta", "-5~+5"))
@@ -144,12 +134,12 @@ class MainWindow(QWidget):
         # ===== Menu names =====
         self._menu_names = [
             "AI工作台",
+            "主播设置",
             "关键词设置",
             "助播设置",
             "音色模型",
             "音频工具",
 
-            "播控设置",
             "DPS设置",
             "回复弹窗",
             "话术改写",
@@ -166,6 +156,8 @@ class MainWindow(QWidget):
                 self.stack.addWidget(self._build_workbench_page())
             elif name == "关键词设置":
                 self.stack.addWidget(self._build_keyword_page())
+            elif name == "主播设置":
+                self.stack.addWidget(self._build_anchor_page())
             elif name == "助播设置":
                 self.stack.addWidget(self._build_zhuli_page())
             elif name == "音频工具":
@@ -177,6 +169,25 @@ class MainWindow(QWidget):
 
         self.side.currentRowChanged.connect(self.stack.setCurrentIndex)
         self.side.setCurrentRow(0)
+
+    def _build_anchor_page(self) -> QWidget:
+        page = QWidget()
+        lay = QVBoxLayout(page)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(10)
+
+        title = QLabel("主播设置")
+        title.setStyleSheet("font-size:16px;font-weight:800;")
+        desc = QLabel("配置主播轮播讲解顺序与优先级")
+        desc.setStyleSheet("color:#93A4B7;")
+
+        lay.addWidget(title)
+        lay.addWidget(desc)
+
+        self.anchor_folder_panel = AnchorFolderOrderPanel(self)
+        lay.addWidget(self.anchor_folder_panel, 1)
+
+        return page
 
     # =========================
     # Page Builders
@@ -251,25 +262,61 @@ class MainWindow(QWidget):
             for x in widgets:
                 x.setEnabled(bool(enabled))
 
-        def _delta_options():
-            # 你图里那种下拉：可按需扩充
+        def _delta_options(kind: str):
+            """每块下拉给 10 个推荐位（含 1 个变态版，方便你压测/测试）。"""
+            kind = (kind or "").lower().strip()
+            if kind == "pitch":
+                return [
+                    "-1~+1",
+                    "-2~+2",
+                    "-3~+3",
+                    "-4~+4",
+                    "-5~+5",
+                    "-6~+6",
+                    "-8~+8",
+                    "-10~+10",
+                    "-12~+12",
+                    "-50~+50（变态版）",
+                ]
+            if kind == "speed":
+                return [
+                    "-1~+1",
+                    "-2~+2",
+                    "-3~+3",
+                    "-4~+4",
+                    "-5~+5",
+                    "+0~+5",
+                    "+0~+10",
+                    "+0~+15",
+                    "+0~+20",
+                    "+80~+120（变态版）",
+                ]
+            # volume
             return [
-                "-5~+5",
-                "-3~+3",
-                "-2~+2",
-                "-1~+1",
+                "+0~+1",
+                "+0~+2",
+                "+0~+3",
+                "+0~+4",
                 "+0~+5",
+                "+0~+6",
+                "+0~+8",
                 "+0~+10",
-                "+50~+60",
-
+                "+0~+12",
+                "+50~+60（变态版）",
             ]
+
+        def _normalize_delta(s: str) -> str:
+            # UI 里给 “（变态版）” 这样的显示，但保存时只保存可解析的 "-5~+5" 形式
+            s = (s or "").strip()
+            if "（" in s:
+                s = s.split("（", 1)[0].strip()
+            return s
 
         def _make_var_block(title: str, key_prefix: str,
                             enabled_attr: str,
-                            sec_min_attr: str, sec_max_attr: str,
                             delta_attr: str,
-                            default_min: int, default_max: int,
-                            default_delta: str):
+                            default_delta: str,
+                            kind: str):
 
 
             wrap = QWidget()
@@ -277,35 +324,19 @@ class MainWindow(QWidget):
             v.setContentsMargins(10, 8, 10, 8)
             v.setSpacing(6)
 
-            # 第一行：checkbox + 随机 min-max 秒
+            # 第一行：开关（不再展示“随机多少秒”，现在是每段音频自动平滑过渡）
             row1 = QWidget()
             h1 = QHBoxLayout(row1)
             h1.setContentsMargins(0, 0, 0, 0)
             h1.setSpacing(10)
 
             cb = QCheckBox(title)
-            cb.setChecked(bool(getattr(app_state, enabled_attr, False)))
-
-            lab_rand = QLabel("随机")
-            sp_min = QSpinBox()
-            sp_min.setRange(1, 3600)
-            sp_min.setValue(int(getattr(app_state, sec_min_attr, default_min)))
-            sp_min.setFixedWidth(70)
-
-            lab_dash = QLabel("-")
-            sp_max = QSpinBox()
-            sp_max.setRange(1, 3600)
-            sp_max.setValue(int(getattr(app_state, sec_max_attr, default_max)))
-            sp_max.setFixedWidth(70)
-
-            lab_sec = QLabel("秒")
+            cb.setChecked(bool(getattr(app_state, enabled_attr, True)))
+            tip = QLabel("每段音频随机一个目标值，并在本段内平滑过渡")
+            tip.setStyleSheet("color:#93A4B7;")
 
             h1.addWidget(cb)
-            h1.addWidget(lab_rand)
-            h1.addWidget(sp_min)
-            h1.addWidget(lab_dash)
-            h1.addWidget(sp_max)
-            h1.addWidget(lab_sec)
+            h1.addWidget(tip)
             h1.addStretch(1)
 
             # 第二行：下拉幅度
@@ -315,8 +346,8 @@ class MainWindow(QWidget):
             h2.setSpacing(10)
 
             cmb = QComboBox()
-            for opt in _delta_options():
-                cmb.addItem(f"设定值基础上 {opt}", opt)
+            for opt in _delta_options(kind):
+                cmb.addItem(f"设定值基础上 {opt}", _normalize_delta(opt))
 
             cur = str(getattr(app_state, delta_attr, default_delta) or default_delta)
             idx = cmb.findData(cur)
@@ -325,8 +356,6 @@ class MainWindow(QWidget):
             h2.addWidget(cmb, 1)
 
 
-            sp_min.setFixedHeight(28)
-            sp_max.setFixedHeight(28)
             cmb.setFixedHeight(30)
 
 
@@ -335,8 +364,6 @@ class MainWindow(QWidget):
 
             wrap.setObjectName("VarBlock")
             cb.setObjectName("VarCheck")
-            sp_min.setObjectName("VarSpin")
-            sp_max.setObjectName("VarSpin")
             cmb.setObjectName("VarCombo")
 
             # --- 事件 & 保存 ---
@@ -345,25 +372,12 @@ class MainWindow(QWidget):
                 # ✅ 直接保存到 runtime_state.json
                 self._save_runtime_flag(enabled_attr, bool(on))
 
-            def _save_secs():
-                mn = int(sp_min.value())
-                mx = int(sp_max.value())
-                if mx < mn:
-                    mx = mn
-                    sp_max.setValue(mx)
-                setattr(app_state, sec_min_attr, mn)
-                setattr(app_state, sec_max_attr, mx)
-                self._save_runtime_flag(f"{key_prefix}_sec_min", mn)
-                self._save_runtime_flag(f"{key_prefix}_sec_max", mx)
-
             def _save_delta():
                 d = cmb.currentData()
                 setattr(app_state, delta_attr, d)
                 self._save_runtime_flag(f"{key_prefix}_delta", d)
 
             cb.toggled.connect(_save_enabled)
-            sp_min.valueChanged.connect(lambda _=None: _save_secs())
-            sp_max.valueChanged.connect(lambda _=None: _save_secs())
             cmb.currentIndexChanged.connect(lambda _=None: _save_delta())
 
             return wrap
@@ -372,23 +386,23 @@ class MainWindow(QWidget):
         var_body.addWidget(_make_var_block(
             "变调节", "var_pitch",
             "var_pitch_enabled",
-            "var_pitch_sec_min", "var_pitch_sec_max",
             "var_pitch_delta",
-            30, 40, "-5~+5"
+            "-5~+5",
+            "pitch",
         ))
         var_body.addWidget(_make_var_block(
             "变音量", "var_volume",
             "var_volume_enabled",
-            "var_volume_sec_min", "var_volume_sec_max",
             "var_volume_delta",
-            50, 60, "+0~+10"
+            "+0~+10",
+            "volume",
         ))
         var_body.addWidget(_make_var_block(
             "变语速", "var_speed",
             "var_speed_enabled",
-            "var_speed_sec_min", "var_speed_sec_max",
             "var_speed_delta",
-            70, 80, "+0~+10"
+            "+0~+10",
+            "speed",
         ))
 
         # 底部应用对象（主播/助播/插播/音乐）
@@ -463,15 +477,7 @@ class MainWindow(QWidget):
         splitter = QSplitter(Qt.Horizontal)
         lay.addWidget(splitter, 1)
 
-        self.folder_panel = FolderOrderPanel(self)
-        try:
-            fm = self.folder_panel.manager
-            app_state.folder_manager = fm
-            print("📂 已注册 folder_manager 到全局 AppState")
-        except Exception as e:
-            print("⚠️ folder_manager 注入失败：", e)
 
-        splitter.addWidget(self.folder_panel)
 
         from PySide6.QtWidgets import QLineEdit
 
