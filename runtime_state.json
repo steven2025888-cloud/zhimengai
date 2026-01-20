@@ -17,5 +17,8 @@
   "var_volume_enabled": true,
   "var_volume_sec_min": 10,
   "var_volume_sec_max": 20,
-  "var_volume_delta": "+50~+60"
+  "var_volume_delta": "+50~+60",
+  "var_speed_enabled": true,
+  "var_speed_sec_min": 10,
+  "var_speed_sec_max": 20
 }
