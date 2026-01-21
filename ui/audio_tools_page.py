@@ -5,8 +5,9 @@ import shutil
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QMessageBox,
-    QInputDialog, QFileDialog
+    QFileDialog, QSizePolicy
 )
+
 
 from core.audio_tools import reorder_audio_files, smart_split_audio_to_dir, scan_audio_prefixes
 from core.keyword_io import load_keywords
@@ -41,7 +42,9 @@ class AudioToolsPage(QWidget):
         self.btn_split = QPushButton("✂️ 自动裁剪")
 
         for b in (self.btn_reorder, self.btn_copy, self.btn_check, self.btn_split):
-            b.setFixedSize(140, 54)
+            b.setMinimumSize(140, 38)
+            b.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+
             btn_row.addWidget(b)
 
         btn_row.addStretch(1)
@@ -57,18 +60,23 @@ class AudioToolsPage(QWidget):
 
     def handle_reorder_audio(self):
         try:
-            if not confirm_dialog(self, "确认操作",
-                                  f"将对音频目录进行统一补号排序：\n{AUDIO_BASE_DIR}\n\n确定继续？"):
+            if not confirm_dialog(
+                    self, "确认操作",
+                    f"将对音频目录进行统一补号排序：\n{AUDIO_BASE_DIR}\n\n确定继续？"
+            ):
                 return
+
             renamed = reorder_audio_files(AUDIO_BASE_DIR, SUPPORTED_AUDIO_EXTS)
             print(f"🧹 重新排序完成：重命名 {renamed} 个文件")
-            QMessageBox.information(self, "完成", f"已重命名 {renamed} 个文件")
+
+            # ✅ 统一弹窗风格
+            confirm_dialog(self, "完成", f"已重命名 {renamed} 个文件")
         except Exception as e:
-            QMessageBox.critical(self, "失败", str(e))
+            confirm_dialog(self, "失败", str(e))
 
     def handle_copy_audio(self):
         if not os.path.isdir(AUDIO_BASE_DIR):
-            QMessageBox.warning(self, "错误", f"音频目录不存在：\n{AUDIO_BASE_DIR}")
+            confirm_dialog(self, "错误", f"音频目录不存在：\n{AUDIO_BASE_DIR}")
             return
 
         raw_name, ok = text_input_dialog(
@@ -81,7 +89,10 @@ class AudioToolsPage(QWidget):
             return
         raw_name = raw_name.strip()
 
-        count, ok = int_input_dialog(self, "复制数量", "请输入需要生成的份数：", value=10, min_value=1, max_value=9999)
+        count, ok = int_input_dialog(
+            self, "复制数量", "请输入需要生成的份数：",
+            value=10, min_value=1, max_value=9999
+        )
         if not ok:
             return
 
@@ -111,14 +122,12 @@ class AudioToolsPage(QWidget):
                 break
 
         if not src_file:
-            QMessageBox.warning(self, "未找到源文件",
-                                f"未在目录中找到：{base_no_ext} + {SUPPORTED_AUDIO_EXTS}")
+            confirm_dialog(self, "未找到源文件", f"未在目录中找到：{base_no_ext} + {SUPPORTED_AUDIO_EXTS}")
             return
 
         m = re.match(r"^(.*?)(\d+)$", base_no_ext)
         if not m:
-            QMessageBox.warning(self, "文件名格式不正确",
-                                "音频文件名必须以数字结尾，例如：烟管165、讲解03")
+            confirm_dialog(self, "文件名格式不正确", "音频文件名必须以数字结尾，例如：烟管165、讲解03")
             return
 
         prefix = m.group(1)
@@ -149,13 +158,7 @@ class AudioToolsPage(QWidget):
             shutil.copy2(src_file, dst_path)
             created += 1
 
-        QMessageBox.information(
-            self, "复制完成",
-            f"源文件：{os.path.basename(src_file)}\n"
-            f"生成范围：{prefix}{str(start_index).zfill(width)} ~ {prefix}{str(end_index).zfill(width)}\n\n"
-            f"成功生成：{created} 个\n"
-            f"跳过：{skipped} 个"
-        )
+        confirm_dialog(self, "复制完成", f"已生成 {created} 份\n跳过 {skipped} 份\n\n目录：\n{AUDIO_BASE_DIR}")
 
         print(f"📁 音频复制完成：{prefix}{start_index}~{end_index}，生成 {created} 个，跳过 {skipped} 个")
 
@@ -191,21 +194,17 @@ class AudioToolsPage(QWidget):
         if not file_path:
             return
 
-        max_sec, ok = QInputDialog.getInt(
+        max_sec, ok = int_input_dialog(
             self,
             "设置最长时长（秒）",
             "请输入每段最长秒数（范围 5~300 秒）：",
-            60,
-            5,
-            300,
-            1
+            value=60,
+            min_value=5,
+            max_value=300,
+            step=1
         )
         if not ok:
             return
-
-        print(f"✂️ AI开始裁剪：{file_path}")
-        print(f"⏱ 最短 5 秒，最长 {max_sec} 秒")
-        print(f"📁 输出目录：{AUDIO_BASE_DIR}")
 
         try:
             files = smart_split_audio_to_dir(
@@ -215,15 +214,7 @@ class AudioToolsPage(QWidget):
                 max_len=max_sec,
                 prefix="讲解"
             )
-
-            print("✅ AI裁剪完成，生成文件：")
-            for f in files:
-                print("   ", os.path.basename(f))
-
-            QMessageBox.information(
-                self,
-                "裁剪完成",
-                f"已生成 {len(files)} 段音频\n\n保存目录：\n{AUDIO_BASE_DIR}"
-            )
+            confirm_dialog(self, "裁剪完成", f"已生成 {len(files)} 段音频\n\n保存目录：\n{AUDIO_BASE_DIR}")
         except Exception as e:
-            QMessageBox.critical(self, "裁剪失败", str(e))
+            confirm_dialog(self, "裁剪失败", str(e))
+

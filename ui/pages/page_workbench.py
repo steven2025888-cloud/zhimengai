@@ -3,10 +3,14 @@ import sys
 import threading
 import functools
 
+
+
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QTextEdit, QPushButton,
-    QSplitter, QMessageBox, QDialog, QSpinBox, QLineEdit,QGridLayout, QApplication
+    QSplitter, QDialog, QSpinBox, QLineEdit, QGridLayout, QApplication
 )
+from ui.dialogs import confirm_dialog
+
 from PySide6.QtCore import Qt, QObject, Signal, QProcess
 from PySide6.QtGui import QTextCursor
 
@@ -196,7 +200,7 @@ class WorkbenchPage(QWidget):
             try:
                 webbrowser.open("file:///" + p.replace("\\", "/"))
             except Exception:
-                QMessageBox.information(self, "目录", p)
+                confirm_dialog(self, "目录", p)
 
     def _make_sys_card(self):
         from PySide6.QtWidgets import QSizePolicy
@@ -248,10 +252,10 @@ class WorkbenchPage(QWidget):
                 ok = QProcess.startDetached(sys.executable, sys.argv, os.getcwd())
 
             if not ok:
-                QMessageBox.warning(self, "失败", "重新运行失败：无法启动新进程")
+                confirm_dialog(self, "失败", "重新运行失败：无法启动新进程")
                 return
         except Exception as e:
-            QMessageBox.critical(self, "异常", f"重新运行异常：\n{e}")
+            confirm_dialog(self, "异常", f"重新运行异常：\n{e}")
             return
 
         # 退出当前进程
@@ -266,7 +270,9 @@ class WorkbenchPage(QWidget):
             from core.updater import force_check_update_and_exit_if_needed
         except Exception:
             # 如果你文件名不是 update_checker.py，就把这里改成你的真实模块名
-            QMessageBox.warning(self, "未找到更新模块", "没找到更新检查模块：请确认 update_checker.py 是否存在。")
+            confirm_dialog(self, "未找到更新模块",
+                           "没找到更新检查模块：请确认 core/updater.py 是否存在并包含 force_check_update_and_exit_if_needed。")
+
             return
 
         force_check_update_and_exit_if_needed()
@@ -275,12 +281,13 @@ class WorkbenchPage(QWidget):
         try:
             from config import DOC_URL
         except Exception:
-            QMessageBox.warning(self, "缺少配置", "config.py 里还没有 DOC_URL，请先加上。")
+            confirm_dialog(self, "缺少配置", "config.py 里还没有 DOC_URL，请先加上。")
             return
 
         url = (DOC_URL or "").strip()
         if not url:
-            QMessageBox.information(self, "说明文档", "说明文档地址未配置，请在 config.py 设置 DOC_URL。")
+            confirm_dialog(self, "说明文档", "说明文档地址未配置，请在 config.py 设置 DOC_URL。")
+
             return
 
         webbrowser.open(url)
@@ -472,7 +479,7 @@ class WorkbenchPage(QWidget):
 
         dlg = QDialog(self)
         dlg.setWindowTitle("⏱ 语音报时间间隔")
-        dlg.setFixedSize(320, 170)
+        dlg.setFixedSize(320, 180)
 
         layout = QVBoxLayout(dlg)
         layout.setContentsMargins(18, 18, 18, 14)
@@ -482,15 +489,17 @@ class WorkbenchPage(QWidget):
         title.setAlignment(Qt.AlignCenter)
         title.setStyleSheet("font-size:14px;font-weight:bold;")
 
-        desc = QLabel("最低 5 分钟")
+        # 🔴 明确提示
+        desc = QLabel("⚠ 最低可设置为 5 分钟，低于 5 分钟将自动调整为 5 分钟")
         desc.setAlignment(Qt.AlignCenter)
-        desc.setStyleSheet("color:#666;")
+        desc.setStyleSheet("color:#C0392B;font-size:12px;")
 
         spin = QSpinBox()
-        spin.setRange(1, 60)
-        spin.setValue(voice_reporter.REPORT_INTERVAL_MINUTES)
+        spin.setRange(5, 60)  # 最小值强制 5
+        spin.setValue(max(5, voice_reporter.REPORT_INTERVAL_MINUTES))
         spin.setSuffix(" 分钟")
         spin.setFixedWidth(160)
+        spin.setStyleSheet("color:#000;")
 
         row = QHBoxLayout()
         row.addStretch()
@@ -509,7 +518,7 @@ class WorkbenchPage(QWidget):
         btn_ok.clicked.connect(dlg.accept)
 
         layout.addWidget(title)
-        layout.addWidget(desc)
+        layout.addWidget(desc)  # 提示语
         layout.addLayout(row)
         layout.addStretch(1)
         layout.addLayout(btn_row)
@@ -538,26 +547,30 @@ class WorkbenchPage(QWidget):
                 client = VoiceApiClient(BASE_URL, self.ctx["license_key"])
                 resp = client.list_models()
                 if not isinstance(resp, dict) or resp.get("code") != 0:
-                    QMessageBox.critical(self, "启动失败", f"无法获取云端音色列表：\n{resp}")
+                    confirm_dialog(self, "启动失败", f"无法获取云端音色列表：\n{resp}")
+
                     return
 
                 models = resp.get("data", [])
                 if not models:
                     app_state.current_model_id = None
-                    QMessageBox.warning(self, "缺少音色模型", "当前账号尚未上传任何音色模型，请先到【音色模型】页面上传并设置默认。")
+                    confirm_dialog(self, "缺少音色模型",
+                                   "当前账号尚未上传任何音色模型，请先到【音色模型】页面上传并设置默认。")
                     self.ctx["jump_to"]("音色模型")
                     return
 
                 default_models = [m for m in models if m.get("is_default")]
                 if not default_models:
                     app_state.current_model_id = None
-                    QMessageBox.warning(self, "未设置默认音色", "请先到【音色模型】页面设置一个默认主播音色。")
+                    confirm_dialog(self, "未设置默认音色", "请先到【音色模型】页面设置一个默认主播音色。")
                     self.ctx["jump_to"]("音色模型")
                     return
 
                 app_state.current_model_id = int(default_models[0]["id"])
             except Exception as e:
-                QMessageBox.critical(self, "启动校验失败", f"音色服务器连接失败：\n{e}")
+                confirm_dialog(self, "启动校验失败", f"音色服务器连接失败：\n{e}")
+                return
+
                 return
 
         self._main_started = True

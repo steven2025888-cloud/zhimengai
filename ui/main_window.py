@@ -202,7 +202,7 @@ class MainWindow(QWidget):
             PageSpec("话术改写", lambda: PlaceholderPage("话术改写（开发中）")),
             PageSpec("自动切换", lambda: PlaceholderPage("自动切换（开发中）")),
             PageSpec("评论管理", lambda: PlaceholderPage("评论管理（开发中）")),
-            PageSpec("使用介绍", lambda: PlaceholderPage("使用介绍（开发中）")),
+
         ]
 
     def _on_page_changed(self, idx: int):

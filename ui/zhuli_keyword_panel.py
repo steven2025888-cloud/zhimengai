@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import re
 from pathlib import Path
 from typing import Dict, List, Tuple
@@ -18,6 +19,16 @@ from core.zhuli_keyword_io import load_zhuli_keywords, save_zhuli_keywords, merg
 
 from core.state import app_state  # ✅ 新增
 from core.runtime_state import load_runtime_state, save_runtime_state  # ✅ 新增
+
+
+def _open_in_file_manager(path: str):
+    p = os.path.abspath(path)
+    if sys.platform.startswith("win"):
+        os.startfile(p)  # type: ignore
+    elif sys.platform == "darwin":
+        os.system(f'open "{p}"')
+    else:
+        os.system(f'xdg-open "{p}"')
 
 
 try:
@@ -57,6 +68,14 @@ def _guess_prefix_from_filename(filename: str) -> str:
 
 
 def _get_zhuli_audio_dir() -> Path:
+    # ✅ 优先使用运行时选择的目录（app_state.zhuli_audio_dir / runtime_state）
+    try:
+        d = getattr(app_state, "zhuli_audio_dir", "") or ""
+        if d:
+            return Path(d)
+    except Exception:
+        pass
+
     try:
         from config import ZHULI_AUDIO_DIR
         return Path(ZHULI_AUDIO_DIR)
@@ -82,6 +101,7 @@ class ZhuliKeywordPanel(QWidget):
 
         # ✅ 载入：会自动从 zhuli_keywords.py 迁移到 runtime_state（如果还没有）
         self.data: Dict[str, dict] = load_zhuli_keywords()
+        self._normalize_priorities()
         self.current_prefix: str | None = None
         self.new_added_prefixes: set[str] = set()
 
@@ -104,7 +124,7 @@ class ZhuliKeywordPanel(QWidget):
 
         self.btn_export = QPushButton("导出")
         self.btn_import = QPushButton("导入（合并）")
-        self.btn_save = QPushButton("保存（可不用点）")
+        self.btn_save = QPushButton("保存")
 
         for b in (self.btn_export, self.btn_import, self.btn_save):
             b.setFixedHeight(36)
@@ -125,6 +145,10 @@ class ZhuliKeywordPanel(QWidget):
         hr.addWidget(lab)
 
         self.cmb_zhuli_mode = QComboBox()
+        self.cmb_zhuli_mode.setObjectName("cmb_zhuli_mode")
+        self.cmb_zhuli_mode.setMinimumHeight(34)
+        self.cmb_zhuli_mode.setMinimumWidth(260)
+        self.cmb_zhuli_mode.setToolTip("模式A：主播关键词优先；模式B：助播关键词优先。选择后立刻生效")
         self.cmb_zhuli_mode.addItem("模式A（主播关键词优先）", "A")
         self.cmb_zhuli_mode.addItem("模式B（助播关键词优先）", "B")
 
@@ -145,6 +169,37 @@ class ZhuliKeywordPanel(QWidget):
         hr.addWidget(tip)
 
         root.addWidget(mode_row)
+
+        # ===== 助播音频目录（像主播一样可选文件夹） =====
+        dir_row = QHBoxLayout()
+        dir_row.setContentsMargins(0, 0, 0, 0)
+        dir_row.setSpacing(10)
+
+        lab_dir = QLabel("助播音频目录")
+        lab_dir.setMinimumWidth(92)
+        lab_dir.setToolTip("助播关键词触发播放时，会从此目录下按前缀匹配音频")
+        dir_row.addWidget(lab_dir)
+
+        self.edt_zhuli_dir = QLineEdit()
+        self.edt_zhuli_dir.setObjectName("zhuliDirEdit")
+        self.edt_zhuli_dir.setReadOnly(True)
+        self.edt_zhuli_dir.setPlaceholderText("未设置，将使用默认 zhuli_audio 目录")
+        self.edt_zhuli_dir.setMinimumHeight(34)
+        dir_row.addWidget(self.edt_zhuli_dir, 1)
+
+        self.btn_open_zhuli_dir = QPushButton("打开")
+        self.btn_open_zhuli_dir.setObjectName("dirBtn")
+        self.btn_open_zhuli_dir.setFixedHeight(34)
+        self.btn_open_zhuli_dir.setToolTip("在文件管理器中打开当前助播音频目录")
+        dir_row.addWidget(self.btn_open_zhuli_dir)
+
+        self.btn_choose_zhuli_dir = QPushButton("选择文件夹")
+        self.btn_choose_zhuli_dir.setObjectName("dirBtn")
+        self.btn_choose_zhuli_dir.setFixedHeight(34)
+        self.btn_choose_zhuli_dir.setToolTip("选择新的助播音频目录，选择后立刻生效")
+        dir_row.addWidget(self.btn_choose_zhuli_dir)
+
+        root.addLayout(dir_row)
 
         def on_mode_changed(_idx: int):
             m = self.cmb_zhuli_mode.currentData()
@@ -187,7 +242,7 @@ class ZhuliKeywordPanel(QWidget):
 
         self.btn_scan_dir = QPushButton("检查目录（zhuli_audio）")
         self.btn_scan_dir.setFixedHeight(34)
-        self.btn_scan_dir.setToolTip("按 config.ZHULI_AUDIO_DIR 扫描音频文件名，自动识别前缀并提示是否保存为分类")
+        self.btn_scan_dir.setToolTip("扫描「助播音频目录」下的音频文件名，自动识别前缀并提示是否保存为分类")
         left.addWidget(self.btn_scan_dir)
 
         # ===== 右侧：词库 =====
@@ -199,15 +254,6 @@ class ZhuliKeywordPanel(QWidget):
         self.lbl_current.setStyleSheet("font-size: 14px; font-weight: 700;")
         current_row.addWidget(self.lbl_current)
         current_row.addStretch(1)
-
-        pr_lab = QLabel("优先级")
-        pr_lab.setStyleSheet("color:#93A4B7;")
-        self.sp_priority = QSpinBox()
-        self.sp_priority.setRange(-999, 999)
-        self.sp_priority.setFixedWidth(90)
-        self.sp_priority.setToolTip("优先级越大越优先（这里改动=实时生效）")
-        current_row.addWidget(pr_lab)
-        current_row.addWidget(self.sp_priority)
 
         right.addLayout(current_row)
 
@@ -255,14 +301,115 @@ class ZhuliKeywordPanel(QWidget):
         self.btn_save.clicked.connect(self.save_all)
 
         self.btn_scan_dir.clicked.connect(self.scan_zhuli_audio_dir)
-        self.sp_priority.valueChanged.connect(self._realtime_update_priority)
+
+        # ✅ 助播音频目录：打开/选择
+        self.btn_open_zhuli_dir.clicked.connect(self.open_zhuli_dir)
+        self.btn_choose_zhuli_dir.clicked.connect(self.choose_zhuli_dir)
 
         self.refresh_prefix_list()
+
+        self._refresh_zhuli_dir_label()
+        self._apply_panel_qss()
+
+    def _apply_panel_qss(self):
+        # 仅美化本面板的下拉框/路径框，避免“下拉不清楚”
+        self.setStyleSheet(
+            '''
+            QComboBox#cmb_zhuli_mode, QLineEdit#zhuliDirEdit {
+                background: rgba(0,0,0,0.20);
+                border: 1px solid rgba(255,255,255,0.18);
+                border-radius: 8px;
+                padding: 6px 10px;
+                color: #E6EEF8;
+                font-size: 13px;
+            }
+            QComboBox#cmb_zhuli_mode { padding-right: 34px; }
+            QComboBox#cmb_zhuli_mode:hover, QLineEdit#zhuliDirEdit:hover {
+                border: 1px solid rgba(255,255,255,0.28);
+                background: rgba(0,0,0,0.26);
+            }
+            QComboBox#cmb_zhuli_mode::drop-down {
+                width: 30px;
+                border-left: 1px solid rgba(255,255,255,0.12);
+                background: rgba(255,255,255,0.06);
+                border-top-right-radius: 8px;
+                border-bottom-right-radius: 8px;
+            }
+            QComboBox QAbstractItemView {
+                background: rgba(18,22,30,0.98);
+                color: #E6EEF8;
+                border: 1px solid rgba(255,255,255,0.16);
+                selection-background-color: rgba(57,113,249,0.65);
+                outline: 0;
+                padding: 6px;
+            }
+            QPushButton#dirBtn {
+                border-radius: 8px;
+                border: 1px solid rgba(255,255,255,0.16);
+                background: rgba(255,255,255,0.06);
+                padding: 0 12px;
+            }
+            QPushButton#dirBtn:hover {
+                background: rgba(255,255,255,0.10);
+                border: 1px solid rgba(255,255,255,0.22);
+            }
+            '''
+        )
 
     def _save_runtime_flag(self, key: str, value):
         state = load_runtime_state() or {}
         state[key] = value
         save_runtime_state(state)
+
+    # ===================== 助播音频目录 =====================
+    @property
+    def zhuli_audio_dir(self) -> str:
+        return str(_get_zhuli_audio_dir())
+
+    def _apply_zhuli_dir_to_state(self, path: str, persist: bool = True):
+        p = Path(path).expanduser().resolve()
+        try:
+            p.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            # 兜底：回到默认
+            p = _get_zhuli_audio_dir().expanduser().resolve()
+            p.mkdir(parents=True, exist_ok=True)
+
+        app_state.zhuli_audio_dir = str(p)
+        if persist:
+            self._save_runtime_flag("zhuli_audio_dir", str(p))
+
+    def _refresh_zhuli_dir_label(self):
+        """刷新助播目录显示"""
+        cur = str(getattr(app_state, "zhuli_audio_dir", "") or "") or self.zhuli_audio_dir
+        if hasattr(self, "edt_zhuli_dir") and self.edt_zhuli_dir is not None:
+            self.edt_zhuli_dir.setText(cur)
+            self.edt_zhuli_dir.setToolTip(cur)
+
+    def open_zhuli_dir(self):
+        """在文件管理器中打开助播音频目录"""
+        try:
+            from PySide6.QtGui import QDesktopServices
+            from PySide6.QtCore import QUrl
+            p = Path(
+                str(getattr(app_state, "zhuli_audio_dir", "") or "") or self.zhuli_audio_dir).expanduser().resolve()
+            p.mkdir(parents=True, exist_ok=True)
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(p)))
+        except Exception as e:
+            QMessageBox.warning(self, "打开失败", str(e))
+
+    def choose_zhuli_dir(self):
+        """选择助播音频目录（选择后立刻生效并保存到 runtime_state）"""
+        try:
+            from PySide6.QtWidgets import QFileDialog
+            start_dir = str(getattr(app_state, "zhuli_audio_dir", "") or "") or self.zhuli_audio_dir
+            d = QFileDialog.getExistingDirectory(self, "选择助播音频目录", start_dir)
+            if not d:
+                return
+            self._apply_zhuli_dir_to_state(d, persist=True)
+            self._refresh_zhuli_dir_label()
+        except Exception as e:
+            QMessageBox.warning(self, "选择失败", str(e))
 
     # ===================== 自动保存（防抖） =====================
     def _schedule_autosave(self, _data: dict):
@@ -271,11 +418,19 @@ class ZhuliKeywordPanel(QWidget):
 
     def _flush_autosave(self):
         try:
+            self._normalize_priorities()
             save_zhuli_keywords(self.data)
             # 你想看得更明显可以开这行：
             # print(f"💾 助播关键词已自动保存：{len(self.data)} 个分类")
         except Exception as e:
             print("❌ 助播关键词自动保存失败：", e)
+
+    def _normalize_priorities(self):
+        # ✅ 去掉“优先级可编辑”：统一锁死为 0（不影响旧数据读取）
+        for p, cfg in (self.data or {}).items():
+            if isinstance(cfg, dict):
+                cfg["priority"] = 0
+                cfg.setdefault("prefix", p)
 
     # ===================== 左侧分类 =====================
     def refresh_prefix_list(self):
@@ -348,6 +503,9 @@ class ZhuliKeywordPanel(QWidget):
         self.new_added_prefixes.add(name)
         self.refresh_prefix_list()
 
+        self._refresh_zhuli_dir_label()
+        self._apply_panel_qss()
+
         # ✅ 关键：新建分类也要实时生效 + 自动保存
         self.sig_realtime_changed.emit(self.data)
 
@@ -387,6 +545,9 @@ class ZhuliKeywordPanel(QWidget):
         self.current_prefix = new_name
         self.refresh_prefix_list()
 
+        self._refresh_zhuli_dir_label()
+        self._apply_panel_qss()
+
         # ✅ 关键：重命名也要实时生效 + 自动保存
         self.sig_realtime_changed.emit(self.data)
 
@@ -397,7 +558,8 @@ class ZhuliKeywordPanel(QWidget):
         if confirm_dialog is not None:
             ok = bool(confirm_dialog(self, "确认删除", f"确定删除分类「{self.current_prefix}」及其全部词条吗？"))
         else:
-            ok = QMessageBox.question(self, "确认删除", f"确定删除分类「{self.current_prefix}」及其全部词条吗？") == QMessageBox.Yes
+            ok = QMessageBox.question(self, "确认删除",
+                                      f"确定删除分类「{self.current_prefix}」及其全部词条吗？") == QMessageBox.Yes
         if not ok:
             return
 
@@ -405,6 +567,9 @@ class ZhuliKeywordPanel(QWidget):
         self.new_added_prefixes.discard(self.current_prefix)
         self.current_prefix = None
         self.refresh_prefix_list()
+
+        self._refresh_zhuli_dir_label()
+        self._apply_panel_qss()
 
         self.sig_realtime_changed.emit(self.data)
 
@@ -430,10 +595,6 @@ class ZhuliKeywordPanel(QWidget):
         cfg.setdefault("priority", 0)
         cfg.setdefault("prefix", prefix)
         self.data[prefix] = cfg
-
-        self.sp_priority.blockSignals(True)
-        self.sp_priority.setValue(int(cfg.get("priority", 0) or 0))
-        self.sp_priority.blockSignals(False)
 
         self.must_list.clear()
         self.any_list.clear()
@@ -480,7 +641,8 @@ class ZhuliKeywordPanel(QWidget):
         if not words:
             return
 
-        cfg = self.data.get(self.current_prefix) or {"priority": 0, "must": [], "any": [], "deny": [], "prefix": self.current_prefix}
+        cfg = self.data.get(self.current_prefix) or {"priority": 0, "must": [], "any": [], "deny": [],
+                                                     "prefix": self.current_prefix}
         arr = list(map(str, cfg.get(key, []) or []))
         arr.extend(words)
         cfg[key] = _dedup_keep_order(arr)
@@ -536,7 +698,8 @@ class ZhuliKeywordPanel(QWidget):
         if confirm_dialog is not None:
             ok = bool(confirm_dialog(self, "确认清空", f"确定清空分类「{self.current_prefix}」下所有词条吗？"))
         else:
-            ok = QMessageBox.question(self, "确认清空", f"确定清空分类「{self.current_prefix}」下所有词条吗？") == QMessageBox.Yes
+            ok = QMessageBox.question(self, "确认清空",
+                                      f"确定清空分类「{self.current_prefix}」下所有词条吗？") == QMessageBox.Yes
         if not ok:
             return
 
@@ -576,26 +739,24 @@ class ZhuliKeywordPanel(QWidget):
         if confirm_dialog is not None:
             ok = bool(confirm_dialog(self, "确认导入", "将按“合并”方式导入：同名分类会覆盖/补齐字段。\n确定继续？"))
         else:
-            ok = QMessageBox.question(self, "确认导入", "将按“合并”方式导入：同名分类会覆盖/补齐字段。\n确定继续？") == QMessageBox.Yes
+            ok = QMessageBox.question(self, "确认导入",
+                                      "将按“合并”方式导入：同名分类会覆盖/补齐字段。\n确定继续？") == QMessageBox.Yes
         if not ok:
             return
 
         self.data = merge_zhuli_keywords(self.data, incoming)
+        self._normalize_priorities()
         self.refresh_prefix_list()
+
+        self._refresh_zhuli_dir_label()
+        self._apply_panel_qss()
+
         self.sig_realtime_changed.emit(self.data)
 
     def save_all(self):
+        self._normalize_priorities()
         save_zhuli_keywords(self.data)
-        QMessageBox.information(self, "保存成功", "助播关键词已保存（其实你改动时已自动保存）")
-
-    # ===================== 实时更新 =====================
-    def _realtime_update_priority(self, val: int):
-        if not self.current_prefix:
-            return
-        cfg = self.data.get(self.current_prefix) or {"priority": 0, "must": [], "any": [], "deny": [], "prefix": self.current_prefix}
-        cfg["priority"] = int(val)
-        self.data[self.current_prefix] = cfg
-        self.sig_realtime_changed.emit(self.data)
+        confirm_dialog(self, "保存成功", "助播关键词已保存（其实你改动时已自动保存）")
 
     # ===================== 检查目录 =====================
     def scan_zhuli_audio_dir(self):
@@ -638,6 +799,10 @@ class ZhuliKeywordPanel(QWidget):
             self.new_added_prefixes.add(name)
 
         self.refresh_prefix_list()
+
+        self._refresh_zhuli_dir_label()
+        self._apply_panel_qss()
+
         self.sig_realtime_changed.emit(self.data)
 
         first = new_prefixes[0]

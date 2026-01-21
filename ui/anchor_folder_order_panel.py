@@ -6,7 +6,7 @@ from pathlib import Path
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QListWidget, QPushButton,
-    QMessageBox, QToolButton, QFileDialog
+    QToolButton, QFileDialog, QLineEdit, QApplication
 )
 from PySide6.QtCore import Qt, QSize
 from PySide6.QtGui import QFont, QIcon
@@ -14,6 +14,8 @@ from PySide6.QtGui import QFont, QIcon
 from audio.folder_order_manager import FolderOrderManager
 from core.state import app_state
 from config import AUDIO_BASE_DIR
+
+from ui.dialogs import confirm_dialog, choice_dialog, ChoiceItem
 
 
 def _open_in_file_manager(path: str):
@@ -52,7 +54,7 @@ class AnchorFolderOrderPanel(QWidget):
         # ===== UI =====
         root = QVBoxLayout(self)
         root.setContentsMargins(10, 10, 10, 10)
-        root.setSpacing(8)
+        root.setSpacing(10)
 
         top_row = QHBoxLayout()
         lbl_title = QLabel("主播设置")
@@ -68,20 +70,58 @@ class AnchorFolderOrderPanel(QWidget):
         lbl_desc.setStyleSheet("color:#93A4B7;")
         root.addWidget(lbl_desc)
 
-        # ===== 目录行 =====
+        # ===== 目录行（复用助播那套风格：路径输入框 + 打开/选择 + 复制） =====
         dir_row = QHBoxLayout()
+        dir_row.setSpacing(8)
 
-        self.lbl_dir = QLabel("")
-        self.lbl_dir.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        self.lbl_dir.setStyleSheet("color:#556;")
+        lbl_dir_title = QLabel("主播音频目录：")
+        lbl_dir_title.setMinimumWidth(92)
 
-        self.btn_open_dir = QPushButton("🗂 打开文件夹")
-        self.btn_choose_dir = QPushButton("📁 选择文件夹")
-        self.btn_open_dir.setFixedHeight(34)
-        self.btn_choose_dir.setFixedHeight(34)
+        self.edt_dir = QLineEdit()
+        self.edt_dir.setReadOnly(True)
+        self.edt_dir.setPlaceholderText("请选择主播音频目录…")
+        self.edt_dir.setMinimumHeight(34)
+        self.edt_dir.setStyleSheet("""
+            QLineEdit {
+                border: 1px solid rgba(255,255,255,0.14);
+                border-radius: 10px;
+                padding: 0 10px;
+                background: rgba(0,0,0,0.18);
+                color: #E6EEF8;
+            }
+            QLineEdit:focus {
+                border: 1px solid rgba(57,113,249,0.45);
+                background: rgba(0,0,0,0.22);
+            }
+        """)
 
-        dir_row.addWidget(QLabel("当前目录："))
-        dir_row.addWidget(self.lbl_dir, 1)
+        self.btn_copy_dir = QPushButton("复制")
+        self.btn_open_dir = QPushButton("打开")
+        self.btn_choose_dir = QPushButton("选择文件夹")
+
+        for b in (self.btn_copy_dir, self.btn_open_dir, self.btn_choose_dir):
+            b.setFixedHeight(34)
+            b.setCursor(Qt.PointingHandCursor)
+            b.setStyleSheet("""
+                QPushButton {
+                    border: 1px solid rgba(255,255,255,0.14);
+                    border-radius: 10px;
+                    padding: 0 12px;
+                    background: rgba(255,255,255,0.06);
+                    color: #E6EEF8;
+                }
+                QPushButton:hover {
+                    background: rgba(255,255,255,0.10);
+                    border: 1px solid rgba(255,255,255,0.20);
+                }
+                QPushButton:pressed {
+                    background: rgba(255,255,255,0.14);
+                }
+            """)
+
+        dir_row.addWidget(lbl_dir_title)
+        dir_row.addWidget(self.edt_dir, 1)
+        dir_row.addWidget(self.btn_copy_dir)
         dir_row.addWidget(self.btn_open_dir)
         dir_row.addWidget(self.btn_choose_dir)
         root.addLayout(dir_row)
@@ -90,7 +130,7 @@ class AnchorFolderOrderPanel(QWidget):
 
         # ===== 状态 =====
         self.lbl_status = QLabel("")
-        self.lbl_status.setStyleSheet("color:#777;")
+        self.lbl_status.setStyleSheet("color:#93A4B7;")
         root.addWidget(self.lbl_status)
 
         # ===== 列表 + 箭头 =====
@@ -102,6 +142,23 @@ class AnchorFolderOrderPanel(QWidget):
         self.list.setDefaultDropAction(Qt.MoveAction)
         self.list.setSelectionMode(QListWidget.SingleSelection)
         self.list.setToolTip("提示：按住某一项拖动即可改变顺序")
+        self.list.setStyleSheet("""
+            QListWidget {
+                border: 1px solid rgba(255,255,255,0.10);
+                border-radius: 12px;
+                background: rgba(0,0,0,0.16);
+                color: #E6EEF8;
+                padding: 6px;
+            }
+            QListWidget::item {
+                padding: 8px 10px;
+                border-radius: 10px;
+            }
+            QListWidget::item:selected {
+                background: rgba(57,113,249,0.22);
+                border: 1px solid rgba(57,113,249,0.35);
+            }
+        """)
         center.addWidget(self.list, 1)
 
         arrow_col = QVBoxLayout()
@@ -123,6 +180,31 @@ class AnchorFolderOrderPanel(QWidget):
         self.btn_reload = QPushButton("🔄 重新扫描文件夹")
         self.btn_save.setEnabled(False)
 
+        for b in (self.btn_save, self.btn_reload):
+            b.setFixedHeight(36)
+            b.setCursor(Qt.PointingHandCursor)
+            b.setStyleSheet("""
+                QPushButton {
+                    border: 1px solid rgba(255,255,255,0.14);
+                    border-radius: 12px;
+                    padding: 0 14px;
+                    background: rgba(255,255,255,0.06);
+                    color: #E6EEF8;
+                    font-weight: 600;
+                }
+                QPushButton:hover {
+                    background: rgba(255,255,255,0.10);
+                    border: 1px solid rgba(255,255,255,0.20);
+                }
+                QPushButton:pressed {
+                    background: rgba(255,255,255,0.14);
+                }
+                QPushButton:disabled {
+                    color: rgba(230,238,248,0.35);
+                    background: rgba(255,255,255,0.03);
+                }
+            """)
+
         bottom.addWidget(self.btn_save)
         bottom.addWidget(self.btn_reload)
         bottom.addStretch(1)
@@ -131,6 +213,7 @@ class AnchorFolderOrderPanel(QWidget):
         # ===== 事件 =====
         self.btn_choose_dir.clicked.connect(self.choose_dir)
         self.btn_open_dir.clicked.connect(self.open_dir)
+        self.btn_copy_dir.clicked.connect(self.copy_dir)
 
         self.btn_up.clicked.connect(self.move_up)
         self.btn_down.clicked.connect(self.move_down)
@@ -165,7 +248,14 @@ class AnchorFolderOrderPanel(QWidget):
             self._save_flag("anchor_audio_dir", str(p))
 
     def _refresh_dir_label(self):
-        self.lbl_dir.setText(self.anchor_audio_dir)
+        self.edt_dir.setText(self.anchor_audio_dir)
+
+    def copy_dir(self):
+        try:
+            QApplication.clipboard().setText(self.anchor_audio_dir)
+            self.lbl_status.setText("✅ 已复制目录到剪贴板")
+        except Exception:
+            pass
 
     def choose_dir(self):
         picked = QFileDialog.getExistingDirectory(self, "选择主播音频目录", self.anchor_audio_dir)
@@ -180,13 +270,13 @@ class AnchorFolderOrderPanel(QWidget):
         app_state.folder_manager = self.manager
 
         self.reload_folders(set_saved_snapshot=True)
-        QMessageBox.information(self, "已切换目录", f"主播音频目录已更新：\n{self.anchor_audio_dir}")
+        confirm_dialog(self, "已切换目录", f"主播音频目录已更新：\n{self.anchor_audio_dir}")
 
     def open_dir(self):
         try:
             _open_in_file_manager(self.anchor_audio_dir)
         except Exception as e:
-            QMessageBox.warning(self, "打开失败", str(e))
+            confirm_dialog(self, "打开失败", str(e))
 
     # ------------------- manager 兼容层 -------------------
 
@@ -286,9 +376,9 @@ class AnchorFolderOrderPanel(QWidget):
             b.setIconSize(QSize(18, 18))
             b.setFixedSize(36, 36)
             b.setStyleSheet("""
-                QToolButton { border-radius: 8px; background: #F3F6FA; }
-                QToolButton:hover { background: #E6EDF7; }
-                QToolButton:pressed { background: #D6E3F5; }
+                QToolButton { border-radius: 10px; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.14); }
+                QToolButton:hover { background: rgba(255,255,255,0.10); border: 1px solid rgba(255,255,255,0.20); }
+                QToolButton:pressed { background: rgba(255,255,255,0.14); }
             """)
 
     # ------------------- 排序/状态 -------------------
@@ -330,12 +420,16 @@ class AnchorFolderOrderPanel(QWidget):
 
     def reload_folders(self, set_saved_snapshot: bool = False):
         if self._dirty and not set_saved_snapshot:
-            r = QMessageBox.question(
-                self, "确认重新扫描？",
+            choice, ok = choice_dialog(
+                self,
+                "确认重新扫描？",
                 "你有未保存的排序。\n重新扫描会从磁盘重新读取列表，可能覆盖当前顺序。\n\n仍要继续吗？",
-                QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+                items=[
+                    ChoiceItem("继续扫描", role="destructive"),
+                    ChoiceItem("取消", role="cancel"),
+                ],
             )
-            if r != QMessageBox.Yes:
+            if not ok or choice != "继续扫描":
                 return
 
         self.manager.load()
@@ -352,10 +446,10 @@ class AnchorFolderOrderPanel(QWidget):
     def save_order(self):
         order = self.get_current_order()
         if not order:
-            QMessageBox.warning(self, "无法保存", "列表为空，无法保存顺序。")
+            confirm_dialog(self, "无法保存", "列表为空，无法保存顺序。")
             return
 
         self.manager.save(order)
         self._last_saved_order = order[:]
         self._set_dirty(False)
-        QMessageBox.information(self, "保存成功", "文件夹顺序已保存，下次播放将按此顺序轮播。")
+        confirm_dialog(self, "保存成功", "文件夹顺序已保存，下次播放将按此顺序轮播。")

@@ -1,6 +1,20 @@
 import sys
 from pathlib import Path
 
+
+
+def app_dir() -> Path:
+    # 打包后：exe 所在目录
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    # 开发时：项目根目录（config.py 在根目录）
+    return Path(__file__).resolve().parent
+
+BASE_DIR = app_dir()
+IMG_DIR = BASE_DIR / "img"
+FFMPEG_DIR = BASE_DIR / "ffmpeg"
+FFMPEG_EXE = FFMPEG_DIR / "ffmpeg.exe"
+
 # ================== 基础配置 ==================
 zhandian = "api.zhimengai.xyz"
 BASE_URL = "https://" + zhandian

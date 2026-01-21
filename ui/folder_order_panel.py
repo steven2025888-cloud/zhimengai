@@ -6,6 +6,7 @@ from PySide6.QtCore import Qt, QSettings
 from PySide6.QtGui import QFont
 
 from audio.folder_order_manager import FolderOrderManager
+from ui.dialogs import confirm_dialog, choice_dialog, ChoiceItem
 
 
 class FolderOrderPanel(QWidget):
@@ -173,7 +174,7 @@ class FolderOrderPanel(QWidget):
         self.manager.save(order)
         self._last_saved_order = order[:]
         self._set_dirty(False)
-        QMessageBox.information(self, "保存成功", "文件夹顺序已保存，下次播放将按此顺序轮播。")
+        confirm_dialog(self, "保存成功", "文件夹顺序已保存，下次播放将按此顺序轮播。")
 
     def reload_folders(self):
         if self._dirty:
