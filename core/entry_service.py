@@ -3,6 +3,37 @@ import time
 import sys
 import threading
 
+import json
+from pathlib import Path
+
+
+def _project_root() -> Path:
+    # core/*.py -> parents[1] is project root
+    return Path(__file__).resolve().parents[1]
+
+
+def _runtime_state_path() -> Path:
+    return _project_root() / "runtime_state.json"
+
+
+def _load_runtime_state() -> dict:
+    p = _runtime_state_path()
+    if not p.exists():
+        return {}
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _save_runtime_state(state: dict):
+    p = _runtime_state_path()
+    try:
+        p.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
 from PySide6.QtWidgets import QApplication, QDialog
 from ui.license_login_dialog import LicenseLoginDialog
 
@@ -21,6 +52,7 @@ from core.ws_command_router import WSCommandRouter
 from core.douyin_listener import DouyinListener
 
 from audio.folder_order_manager import FolderOrderManager
+
 folder_manager = FolderOrderManager()
 
 
@@ -37,12 +69,8 @@ def run_engine(license_key: str):
     from config import AUDIO_BASE_DIR
     from audio.folder_order_manager import FolderOrderManager
 
-    # ✅ 启动即读取 runtime_state
-    try:
-        from core.runtime_state import load_runtime_state
-        rt_flags = load_runtime_state() or {}
-    except Exception:
-        rt_flags = {}
+    # ✅ 启动即读取 runtime_state.json（统一路径）
+    rt_flags = _load_runtime_state() or {}
 
     if rt_flags.get("anchor_audio_dir"):
         state.anchor_audio_dir = str(rt_flags.get("anchor_audio_dir"))
@@ -77,8 +105,8 @@ def run_engine(license_key: str):
     # runtime_state 读取（实时）
     def get_runtime_qa_keywords() -> dict:
         try:
-            from core.runtime_state import load_runtime_state
-            rt = load_runtime_state() or {}
+
+            rt = _load_runtime_state() or {}
         except Exception:
             rt = {}
 

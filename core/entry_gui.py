@@ -13,6 +13,15 @@ from core.updater import force_check_update_and_exit_if_needed
 from ui.license_login_dialog import LicenseLoginDialog
 from ui.main_window import MainWindow
 
+# ✅ 运行时状态（记住上次选择的目录/模式）
+try:
+    from core.state import app_state
+    from core.runtime_state import load_runtime_state
+except Exception:
+    app_state = None
+    load_runtime_state = None
+
+
 
 def app_dir() -> Path:
     """开发态=项目根目录；打包态=exe 所在目录（onedir 推荐）"""
@@ -74,6 +83,19 @@ def run():
 
     expire_time = getattr(login, "expire_time", None)
     license_key = login.edit.text().strip()
+
+    # ✅ 启动 GUI 时也同步 runtime_state（让面板一打开就显示上次选择的目录）
+    try:
+        if app_state is not None and callable(load_runtime_state):
+            rt = load_runtime_state() or {}
+            if rt.get("anchor_audio_dir"):
+                app_state.anchor_audio_dir = str(rt.get("anchor_audio_dir"))
+            if rt.get("zhuli_audio_dir"):
+                app_state.zhuli_audio_dir = str(rt.get("zhuli_audio_dir"))
+            if rt.get("zhuli_mode"):
+                app_state.zhuli_mode = str(rt.get("zhuli_mode")).upper()
+    except Exception:
+        pass
 
     # 主窗口
     win = MainWindow(resource_path, expire_time=expire_time, license_key=license_key)

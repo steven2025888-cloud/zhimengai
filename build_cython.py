@@ -1,5 +1,5 @@
-# build_cython.py
-import os
+# build_cython.py (NO .c in project)
+import argparse
 import shutil
 import sys
 from pathlib import Path
@@ -8,25 +8,20 @@ from setuptools import Extension, setup
 from Cython.Build import cythonize
 
 ROOT = Path(__file__).resolve().parent
-OUT = ROOT / "_cython_build"        # 临时编译输出（会删）
-DIST = ROOT / "protected_src"       # 给 PyInstaller 的干净输入目录
 
-# 除 app.py / main.py 外：你要求“其他全部编译”
 COMPILE_DIRS = ["core", "audio", "api", "tts", "ui"]
 COMPILE_FILES = ["config.py", "keywords.py", "zhuli_keywords.py", "logger_bootstrap.py"]
 
-# 不希望复制到 protected_src 的目录（资源目录会保留：img/ffmpeg/ui/audio/zhubo_audio/zhuli_audio）
 IGNORE_DIRS = {
     ".venv", "venv", ".idea",
     "__pycache__", ".pytest_cache",
     "dist", "build",
-    "protected_src", "_cython_build",
     "logs", "audio_cache",
 }
 
-def rm(path: Path):
-    if path.exists():
-        shutil.rmtree(path, ignore_errors=True)
+def rm(p: Path):
+    if p.exists():
+        shutil.rmtree(p, ignore_errors=True)
 
 def copytree(src: Path, dst: Path):
     def ignore_patterns(dirpath, names):
@@ -42,83 +37,114 @@ def copytree(src: Path, dst: Path):
     shutil.copytree(src, dst, ignore=ignore_patterns)
 
 def main():
-    rm(OUT)
-    rm(DIST)
-    OUT.mkdir(parents=True, exist_ok=True)
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--outdir", required=True)
+    args = ap.parse_args()
 
-    # 收集要编译的 .py
+    dist = Path(args.outdir).resolve()
+    temp_root = dist.parent / "_cython_tmp"
+    src_tmp = temp_root / "src"       # 放源码拷贝
+    build_lib = temp_root / "buildlib"  # 放 .pyd
+    build_tmp = temp_root / "buildtmp"  # 放编译中间文件
+    gen_c_dir = temp_root / "gen_c"     # 放生成的 .c（只在 TEMP）
+
+    rm(temp_root)
+    rm(dist)
+
+    # 1) 先把整个项目复制到 dist（资源都在这里，logo.ico/img/ffmpeg 都会带上）
+    copytree(ROOT, dist)
+
+    # 2) 再拷贝“要编译的源码”到 TEMP 的 src_tmp（避免在项目目录生成 .c）
+    src_tmp.mkdir(parents=True, exist_ok=True)
+
+    # 拷贝要编译的目录
+    for d in COMPILE_DIRS:
+        s = ROOT / d
+        if s.exists():
+            shutil.copytree(s, src_tmp / d, dirs_exist_ok=True)
+
+    # 拷贝要编译的单文件
+    for f in COMPILE_FILES:
+        s = ROOT / f
+        if s.exists():
+            (src_tmp / f).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(s, src_tmp / f)
+
+    # 3) 在 TEMP 里收集 .py（注意：这里全部用 src_tmp 下的路径）
     py_files = []
     for d in COMPILE_DIRS:
-        base = ROOT / d
-        if not base.exists():
-            continue
-        py_files.extend(base.rglob("*.py"))
+        base = src_tmp / d
+        if base.exists():
+            py_files.extend(base.rglob("*.py"))
     for f in COMPILE_FILES:
-        p = ROOT / f
+        p = src_tmp / f
         if p.exists():
             py_files.append(p)
 
     if not py_files:
-        print("❌ 没找到要编译的文件，请检查 COMPILE_DIRS/COMPILE_FILES")
+        print("No python files to compile.")
         sys.exit(1)
 
-    # 生成扩展模块列表
+    # 4) 生成 Extension（模块名仍以原项目结构为准）
     exts = []
     for p in py_files:
-        rel = p.relative_to(ROOT).with_suffix("")   # core/a.py -> core/a
-        mod = ".".join(rel.parts)                   # core.a
+        rel = p.relative_to(src_tmp).with_suffix("")
+        mod = ".".join(rel.parts)
         exts.append(Extension(mod, [str(p)]))
 
-    # 编译
+    # 5) 编译：生成的 .c 全进 gen_c_dir，.pyd 进 build_lib
+    build_lib.mkdir(parents=True, exist_ok=True)
+    build_tmp.mkdir(parents=True, exist_ok=True)
+    gen_c_dir.mkdir(parents=True, exist_ok=True)
+
     setup(
-        script_args=["build_ext", "--build-lib", str(OUT)],
+        script_args=[
+            "build_ext",
+            "--build-lib", str(build_lib),
+            "--build-temp", str(build_tmp),
+        ],
         ext_modules=cythonize(
             exts,
             compiler_directives={"language_level": "3"},
             annotate=False,
+            build_dir=str(gen_c_dir),  # ✅ 关键：.c 生成目录（TEMP）
         ),
         zip_safe=False,
     )
 
-    # 复制项目到 protected_src（作为 PyInstaller 输入）
-    copytree(ROOT, DIST)
-
-    # 把编译好的 .pyd 覆盖到 protected_src，并删除对应 .py
-    for compiled in OUT.rglob("*"):
+    # 6) 把 build_lib 里的 .pyd 覆盖到 dist 对应位置，并删除 dist 里的源码 .py（保留 __init__.py）
+    for compiled in build_lib.rglob("*"):
         if compiled.suffix.lower() in {".pyd", ".so", ".dll"}:
-            rel = compiled.relative_to(OUT)
-            target = DIST / rel
+            rel = compiled.relative_to(build_lib)
+            target = dist / rel
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(compiled, target)
 
-            # 删除同名 .py
             maybe_py = target.with_suffix(".py")
             if maybe_py.exists():
                 maybe_py.unlink()
 
-    # 删除已编译目录下的 .py（保留 __init__.py）
+    # 删除 dist 里已编译目录下的 .py（保留 __init__.py）
     for d in COMPILE_DIRS:
-        base = DIST / d
-        if not base.exists():
-            continue
-        for p in base.rglob("*.py"):
-            if p.name == "__init__.py":
-                continue
-            p.unlink()
+        base = dist / d
+        if base.exists():
+            for p in base.rglob("*.py"):
+                if p.name == "__init__.py":
+                    continue
+                p.unlink()
 
-    # 删除已编译的根目录单文件
     for f in COMPILE_FILES:
-        p = DIST / f
+        p = dist / f
         if p.exists():
             p.unlink()
 
-    # 保护：确保 app.py/main.py 还在（薄入口）
-    if not (DIST / "app.py").exists():
-        print("❌ protected_src 缺少 app.py（薄入口必须存在）")
-        sys.exit(1)
+    # 清理 TEMP（不留任何中间物）
+    rm(temp_root)
 
-    print("✅ Cython 编译完成")
-    print(f"✅ PyInstaller 输入目录：{DIST}")
+    if not (dist / "app.py").exists():
+        raise RuntimeError("protected src missing app.py (thin entry must exist)")
+
+    print("OK protected src:", dist)
 
 if __name__ == "__main__":
     main()

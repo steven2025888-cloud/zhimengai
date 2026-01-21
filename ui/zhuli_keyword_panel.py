@@ -18,7 +18,35 @@ from PySide6.QtWidgets import (
 from core.zhuli_keyword_io import load_zhuli_keywords, save_zhuli_keywords, merge_zhuli_keywords
 
 from core.state import app_state  # ✅ 新增
-from core.runtime_state import load_runtime_state, save_runtime_state  # ✅ 新增
+
+
+# ===== runtime_state.json 统一路径（避免工作目录变化导致不保存） =====
+def _project_root() -> Path:
+    # ui/*.py -> parents[1] is project root
+    return Path(__file__).resolve().parents[1]
+
+
+def _runtime_state_path() -> Path:
+    return _project_root() / "runtime_state.json"
+
+
+def load_runtime_state() -> dict:
+    p = _runtime_state_path()
+    if not p.exists():
+        return {}
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def save_runtime_state(state: dict):
+    p = _runtime_state_path()
+    try:
+        p.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        # 最差也不要让 UI 崩
+        pass
 
 
 def _open_in_file_manager(path: str):
@@ -68,9 +96,18 @@ def _guess_prefix_from_filename(filename: str) -> str:
 
 
 def _get_zhuli_audio_dir() -> Path:
-    # ✅ 优先使用运行时选择的目录（app_state.zhuli_audio_dir / runtime_state）
+    # ✅ 优先使用运行时选择的目录：app_state -> runtime_state.json -> config 默认值
     try:
         d = getattr(app_state, "zhuli_audio_dir", "") or ""
+        if d:
+            return Path(d)
+    except Exception:
+        pass
+
+    # 兜底：如果 app_state 还没初始化，直接读 runtime_state.json
+    try:
+        rt = load_runtime_state() or {}
+        d = str(rt.get("zhuli_audio_dir") or "").strip()
         if d:
             return Path(d)
     except Exception:
@@ -98,6 +135,16 @@ class ZhuliKeywordPanel(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+
+        # ✅ 启动时同步 runtime_state（解决：重启后目录/模式仍显示旧值）
+        try:
+            rt = load_runtime_state() or {}
+            if rt.get("zhuli_audio_dir"):
+                app_state.zhuli_audio_dir = str(rt.get("zhuli_audio_dir"))
+            if rt.get("zhuli_mode"):
+                app_state.zhuli_mode = str(rt.get("zhuli_mode")).upper()
+        except Exception:
+            pass
 
         # ✅ 载入：会自动从 zhuli_keywords.py 迁移到 runtime_state（如果还没有）
         self.data: Dict[str, dict] = load_zhuli_keywords()
@@ -756,7 +803,7 @@ class ZhuliKeywordPanel(QWidget):
     def save_all(self):
         self._normalize_priorities()
         save_zhuli_keywords(self.data)
-        confirm_dialog(self, "保存成功", "助播关键词已保存（其实你改动时已自动保存）")
+        QMessageBox.information(self, "保存成功", "助播关键词已保存（其实你改动时已自动保存）")
 
     # ===================== 检查目录 =====================
     def scan_zhuli_audio_dir(self):

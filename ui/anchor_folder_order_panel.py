@@ -6,7 +6,7 @@ from pathlib import Path
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QListWidget, QPushButton,
-    QToolButton, QFileDialog, QLineEdit, QApplication
+    QToolButton, QFileDialog, QLineEdit
 )
 from PySide6.QtCore import Qt, QSize
 from PySide6.QtGui import QFont, QIcon
@@ -26,6 +26,34 @@ def _open_in_file_manager(path: str):
         os.system(f'open "{p}"')
     else:
         os.system(f'xdg-open "{p}"')
+
+
+def _project_root() -> Path:
+    # ui/*.py -> parents[1] is project root
+    return Path(__file__).resolve().parents[1]
+
+
+def _runtime_state_path() -> Path:
+    return _project_root() / "runtime_state.json"
+
+
+def _load_runtime_state() -> dict:
+    p = _runtime_state_path()
+    if not p.exists():
+        return {}
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _save_runtime_state(state: dict):
+    p = _runtime_state_path()
+    try:
+        p.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        # 最差也别让 UI 崩
+        pass
 
 
 class AnchorFolderOrderPanel(QWidget):
@@ -95,11 +123,10 @@ class AnchorFolderOrderPanel(QWidget):
             }
         """)
 
-        self.btn_copy_dir = QPushButton("复制")
         self.btn_open_dir = QPushButton("打开")
         self.btn_choose_dir = QPushButton("选择文件夹")
 
-        for b in (self.btn_copy_dir, self.btn_open_dir, self.btn_choose_dir):
+        for b in (self.btn_open_dir, self.btn_choose_dir):
             b.setFixedHeight(34)
             b.setCursor(Qt.PointingHandCursor)
             b.setStyleSheet("""
@@ -121,7 +148,6 @@ class AnchorFolderOrderPanel(QWidget):
 
         dir_row.addWidget(lbl_dir_title)
         dir_row.addWidget(self.edt_dir, 1)
-        dir_row.addWidget(self.btn_copy_dir)
         dir_row.addWidget(self.btn_open_dir)
         dir_row.addWidget(self.btn_choose_dir)
         root.addLayout(dir_row)
@@ -213,7 +239,6 @@ class AnchorFolderOrderPanel(QWidget):
         # ===== 事件 =====
         self.btn_choose_dir.clicked.connect(self.choose_dir)
         self.btn_open_dir.clicked.connect(self.open_dir)
-        self.btn_copy_dir.clicked.connect(self.copy_dir)
 
         self.btn_up.clicked.connect(self.move_up)
         self.btn_down.clicked.connect(self.move_down)
@@ -244,18 +269,13 @@ class AnchorFolderOrderPanel(QWidget):
 
         app_state.anchor_audio_dir = str(p)
 
-        if persist and callable(self._save_flag):
-            self._save_flag("anchor_audio_dir", str(p))
+        if persist:
+            st = _load_runtime_state()
+            st["anchor_audio_dir"] = str(p)
+            _save_runtime_state(st)
 
     def _refresh_dir_label(self):
         self.edt_dir.setText(self.anchor_audio_dir)
-
-    def copy_dir(self):
-        try:
-            QApplication.clipboard().setText(self.anchor_audio_dir)
-            self.lbl_status.setText("✅ 已复制目录到剪贴板")
-        except Exception:
-            pass
 
     def choose_dir(self):
         picked = QFileDialog.getExistingDirectory(self, "选择主播音频目录", self.anchor_audio_dir)
