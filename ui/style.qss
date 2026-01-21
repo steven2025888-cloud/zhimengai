@@ -1,9 +1,32 @@
-QWidget {
-  background: #0B1220;
+
+
+#AppBackground, #AppBackground * {
   color: #E6EEF8;
-  font-family: "Microsoft YaHei";
-  font-size: 13px;
 }
+
+/* ① 最外层：背景色（你只改这个就行） */
+#AppBackground {
+    background-color: #2c3031;
+}
+
+/* ② 左侧栏底色（和背景区分开） */
+#LeftPane {
+    background-color: #242526;
+    border-radius: 5px;
+}
+
+#LeftPane QListWidgetItem {
+    background-color: #242526;
+    border-radius: 5px;
+}
+
+/* ③ 右侧功能区底色（你所有页面都在这里） */
+#RightPane {
+    background-color: #242526;
+    border-radius: 5px;
+}
+
+
 
 QLineEdit, QTextEdit, QListWidget {
   background: #0F1A2E;
@@ -18,12 +41,10 @@ QTextEdit {
   padding: 12px;
 }
 
-QPushButton {
-  background: rgba(43,127,255,0.18);
-  border: 1px solid rgba(43,127,255,0.35);
-  border-radius: 12px;
-  padding: 10px 14px;
-  font-weight: 600;
+QPushButton{
+    color: #FFFFFF;
+    background-color: #3971f9;
+    font-weight: bold;
 }
 
 QPushButton:hover {
@@ -41,9 +62,6 @@ QPushButton:disabled {
   color: rgba(255,255,255,0.35);
 }
 
-QLabel {
-  color: #E6EEF8;
-}
 
 QTabWidget::pane {
   border: 1px solid rgba(255,255,255,0.08);
@@ -72,18 +90,18 @@ QSplitter::handle {
 }
 
 /* ===== Left Side Menu ===== */
+
 QListWidget#SideMenu {
-  background: #0F1A2E;
-  border: 1px solid rgba(255,255,255,0.08);
-  border-radius: 14px;
-  padding: 8px;
+  background: transparent;
+  border: none;
+  padding: 0;
 }
 
 QListWidget#SideMenu::item {
   height: 42px;
-  border-radius: 10px;
-  padding-left: 12px;
+  border-radius: 5px;
   color: #C9D6E5;
+    padding: 0 0px;     /* 内边距 */
 }
 
 QListWidget#SideMenu::item:hover {
@@ -97,16 +115,38 @@ QListWidget#SideMenu::item:selected {
 }
 
 /* ===== Card container (like screenshot blocks) ===== */
-QWidget#Card {
-  background: rgba(255,255,255,0.03);
-  border: 1px solid rgba(255,255,255,0.08);
-  border-radius: 14px;
+
+#Card{
+  border-radius: 10px;
+  background: #2e303f;
+
+}
+
+#CardTitle {
+    font-size: 14px;
+    font-weight: 800;
+    color: #E5E7EB;
+    padding: 6px 0 10px 0;
+    border-bottom: 1px solid rgba(255,255,255,0.08);
 }
 
 QLabel#CardTitle {
   font-weight: 800;
   color: #E6EEF8;
   font-size: 14px;
+    border: 1px solid rgba(255,255,255,0.10);
+
+}
+
+#Card QLabel {
+    color: #CBD5E1;
+    font-size: 13px;
+}
+
+/* Switch 行 hover 高亮 */
+#QWidget:hover {
+    background-color: rgba(255,255,255,0.03);
+    border-radius: 8px;
 }
 
 /* 助播模式下拉美化 */
@@ -174,3 +214,122 @@ QComboBox#ZhuliModeCombo QAbstractItemView {
     font-weight: 700;
 }
 
+
+
+/* =========================
+   勾选控件（解决默认黑字/难看）
+   ========================= */
+QCheckBox, QRadioButton {
+    spacing: 8px;
+    color: #E6EEF8;
+}
+
+QCheckBox::indicator {
+    width: 18px;
+    height: 18px;
+    border-radius: 5px;
+    border: 1px solid rgba(255,255,255,0.14);
+    background: rgba(0,0,0,0.22);
+}
+
+QCheckBox::indicator:hover {
+    border: 1px solid rgba(120,180,255,0.95);   /* 更亮的边框 */
+}
+
+QCheckBox::indicator:checked {
+    border: 1px solid rgba(57,113,249,0.45);
+    image: url("img/check.svg");   /* 你的对勾图标 */
+
+}
+
+QCheckBox::indicator:checked:hover {
+    border: 1px solid rgba(120,180,255,0.95);   /* 更亮的边框 */
+}
+
+
+
+
+/* ===== 变量调节块：更像中控台的“小面板” ===== */
+#VarBlock {
+    background: rgba(0,0,0,0.18);
+    border: 1px solid rgba(255,255,255,0.10);
+    border-radius: 12px;
+}
+
+/* 变量调节块的提示文字（比白色更柔和） */
+QLabel#MutedLabel {
+    color: rgba(233,236,245,0.65);
+}
+
+/* ===== 变量调节下拉：不要刺眼白字，做成柔和浅灰 + 高亮选中 ===== */
+QComboBox#VarCombo {
+    color: rgba(233,236,245,0.85);               /* ✅主文字：柔和浅灰，不刺眼 */
+    background: rgba(0,0,0,0.22);
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 5px;
+    padding: 3px 5px;
+    padding-right: 30px;
+}
+
+QComboBox#VarCombo:hover {
+    border: 1px solid rgba(255,255,255,0.20);
+    background: rgba(0,0,0,0.26);
+}
+
+QComboBox#VarCombo:focus {
+    border: 1px solid rgba(57,113,249,0.55);
+}
+
+
+/* 下拉按钮区域 */
+QComboBox#VarCombo::drop-down {
+    width: 26px;
+    border-left: 1px solid rgba(255,255,255,0.10);
+    background: transparent;
+}
+QComboBox#VarCombo::down-arrow {
+    image: url("img/LsDropdown.svg");
+    width: 12px;      /* 控制图标宽度 */
+    height: 12px;     /* 控制图标高度 */
+}
+
+/* 下拉列表（弹出的选项框） */
+QComboBox#VarCombo QAbstractItemView {
+    background: #2F3142;
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 10px;
+    padding: 6px;
+    outline: 0;
+    color: rgba(233,236,245,0.90);
+    selection-background-color: rgba(57,113,249,0.35);
+}
+
+
+
+
+/* 标准弹窗统一黑字（不影响你主界面） */
+QMessageBox QLabel,
+QInputDialog QLabel,
+QInputDialog QLineEdit,
+QInputDialog QSpinBox,
+QInputDialog QDoubleSpinBox {
+  color: #000000;
+}
+
+QInputDialog QLineEdit,
+QInputDialog QSpinBox,
+QInputDialog QDoubleSpinBox {
+  background: #FFFFFF;
+  selection-background-color: #2D8CF0;
+}
+
+/* 按钮文字也黑 */
+QMessageBox QPushButton,
+QInputDialog QPushButton {
+  color: #000000;
+}
+
+
+#dialog_title{
+  color: #000000;
+}

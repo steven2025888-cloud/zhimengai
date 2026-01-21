@@ -5,15 +5,20 @@ import functools
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QTextEdit, QPushButton,
-    QSplitter, QMessageBox, QDialog, QSpinBox, QLineEdit
+    QSplitter, QMessageBox, QDialog, QSpinBox, QLineEdit,QGridLayout, QApplication
 )
-from PySide6.QtCore import Qt, QObject, Signal
+from PySide6.QtCore import Qt, QObject, Signal, QProcess
 from PySide6.QtGui import QTextCursor
 
 from core.state import app_state
 from api.voice_api import get_machine_code
 from config import BASE_URL
 from ui.switch_toggle import SwitchToggle
+from PySide6.QtCore import QProcess
+import os
+import webbrowser
+
+
 
 print = functools.partial(print, flush=True)
 
@@ -39,15 +44,49 @@ class WorkbenchPage(QWidget):
 
         from audio import voice_reporter
 
-        BTN_H = 64
 
         # ===== buttons / switches =====
-        self.btn_start = QPushButton("🚀 启动系统")
-        self.btn_start.setFixedSize(160, BTN_H)
+        BTN_H = 38
 
-        self.btn_clear_log = QPushButton("🧹 清空日志")
-        self.btn_clear_log.setFixedSize(140, BTN_H)
+        # ===== 系统区 6 个按钮（两排三列）=====
+        def _mk_btn(text: str, primary: bool = False) -> QPushButton:
+            b = QPushButton(text)
+            from PySide6.QtWidgets import QSizePolicy
 
+            b.setMinimumHeight(BTN_H)  # 只限制最小高度
+            b.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)  # 允许纵向/横向拉伸填满
+
+            b.setMinimumWidth(150)
+            if primary:
+                b.setStyleSheet("""
+                    QPushButton{
+                        background:#2D8CF0;color:#fff;border:none;border-radius:10px;
+                        padding:6px 14px;font-weight:800;
+                    }
+                    QPushButton:disabled{opacity:0.55;}
+                """)
+            else:
+                b.setStyleSheet("""
+                    QPushButton{
+                        background:rgba(255,255,255,0.06);
+                        border:1px solid rgba(255,255,255,0.10);
+                        border-radius:10px;
+                        padding:6px 14px;
+                        font-weight:700;
+                    }
+                    QPushButton:hover{background:rgba(255,255,255,0.10);}
+                """)
+            return b
+
+        self.btn_start = _mk_btn("🚀 启动系统", primary=True)
+        self.btn_restart = _mk_btn("🔄 重新运行")
+        self.btn_check_update = _mk_btn("⬆️ 检查更新")
+
+        self.btn_doc = _mk_btn("📖 说明文档")
+        self.btn_open_folder = _mk_btn("📂 打开目录")
+        self.btn_clear_log = _mk_btn("🧹 清空日志")
+
+        # 其他区域按钮（你原来就有）
         self.btn_report_interval = QPushButton(f"⏱ 报时间隔：{voice_reporter.REPORT_INTERVAL_MINUTES} 分钟")
         self.btn_report_interval.setFixedHeight(32)
         self.btn_report_interval.setMinimumWidth(220)
@@ -120,6 +159,11 @@ class WorkbenchPage(QWidget):
         self.sw_zhuli.toggled.connect(self.toggle_zhuli)
         self.btn_test_danmaku.clicked.connect(self.send_test_danmaku)
 
+        self.btn_restart.clicked.connect(self.restart_app)
+        self.btn_check_update.clicked.connect(self.check_update)
+        self.btn_doc.clicked.connect(self.open_doc)
+        self.btn_open_folder.clicked.connect(self.open_app_folder)
+
     # ---------------- UI blocks ----------------
     def _make_card(self, title_text: str):
         frame = QWidget()
@@ -138,15 +182,109 @@ class WorkbenchPage(QWidget):
         v.addLayout(body)
         return frame, body
 
+    def open_app_folder(self):
+        # 优先用 config.get_app_dir()，没有就退化到 exe 同级
+        try:
+            from config import get_app_dir
+            p = str(get_app_dir())
+        except Exception:
+            p = os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else os.getcwd()
+
+        try:
+            os.startfile(p)  # Windows
+        except Exception:
+            try:
+                webbrowser.open("file:///" + p.replace("\\", "/"))
+            except Exception:
+                QMessageBox.information(self, "目录", p)
+
     def _make_sys_card(self):
-        sys_card, sys_body = self._make_card("系统")
-        row = QHBoxLayout()
-        row.setSpacing(10)
-        row.addWidget(self.btn_start)
-        row.addWidget(self.btn_clear_log)
-        row.addStretch(1)
-        sys_body.addLayout(row)
-        return sys_card
+        from PySide6.QtWidgets import QSizePolicy
+
+        frame = QWidget()
+        frame.setObjectName("Card")
+        frame.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+        v = QVBoxLayout(frame)
+        v.setContentsMargins(8, 8, 8, 8)
+        v.setSpacing(8)
+
+        grid = QGridLayout()
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(10)
+        grid.setVerticalSpacing(10)
+
+        # 两列三排
+        grid.addWidget(self.btn_start, 0, 0)
+        grid.addWidget(self.btn_restart, 0, 1)
+
+        grid.addWidget(self.btn_check_update, 1, 0)
+        grid.addWidget(self.btn_doc, 1, 1)
+
+        grid.addWidget(self.btn_open_folder, 2, 0)
+        grid.addWidget(self.btn_clear_log, 2, 1)
+
+        # 让网格“撑满”
+        grid.setColumnStretch(0, 1)
+        grid.setColumnStretch(1, 1)
+        grid.setRowStretch(0, 1)
+        grid.setRowStretch(1, 1)
+        grid.setRowStretch(2, 1)
+
+        v.addLayout(grid, 1)  # 关键：给 grid 一个 stretch，让它吃满垂直空间
+        return frame
+
+    def restart_app(self):
+        from ui.dialogs import confirm_dialog  # 按你的真实路径改
+
+        if not confirm_dialog(self, "重新运行", "确定要重新启动软件吗？"):
+            return
+
+        try:
+            # frozen: 直接重启 exe；非 frozen: 重启 python + 脚本
+            if getattr(sys, "frozen", False):
+                ok = QProcess.startDetached(sys.executable, sys.argv[1:], os.getcwd())
+            else:
+                ok = QProcess.startDetached(sys.executable, sys.argv, os.getcwd())
+
+            if not ok:
+                QMessageBox.warning(self, "失败", "重新运行失败：无法启动新进程")
+                return
+        except Exception as e:
+            QMessageBox.critical(self, "异常", f"重新运行异常：\n{e}")
+            return
+
+        # 退出当前进程
+        from PySide6.QtWidgets import QApplication
+        QApplication.quit()
+        sys.exit(0)
+
+    def check_update(self):
+        # 你已经有“强制检查更新并在需要时退出”的逻辑，直接复用
+        # 对应这个文件里的函数：force_check_update_and_exit_if_needed :contentReference[oaicite:2]{index=2}
+        try:
+            from core.updater import force_check_update_and_exit_if_needed
+        except Exception:
+            # 如果你文件名不是 update_checker.py，就把这里改成你的真实模块名
+            QMessageBox.warning(self, "未找到更新模块", "没找到更新检查模块：请确认 update_checker.py 是否存在。")
+            return
+
+        force_check_update_and_exit_if_needed()
+
+    def open_doc(self):
+        try:
+            from config import DOC_URL
+        except Exception:
+            QMessageBox.warning(self, "缺少配置", "config.py 里还没有 DOC_URL，请先加上。")
+            return
+
+        url = (DOC_URL or "").strip()
+        if not url:
+            QMessageBox.information(self, "说明文档", "说明文档地址未配置，请在 config.py 设置 DOC_URL。")
+            return
+
+        webbrowser.open(url)
+
 
     def _make_auto_card(self):
         auto_card, auto_body = self._make_card("自动化控制")
@@ -181,6 +319,7 @@ class WorkbenchPage(QWidget):
 
         def _make_var_block(title: str, enabled_attr: str, delta_attr: str, default_delta: str, kind: str):
             wrap = QWidget()
+            wrap.setObjectName("VarBlock")
             v = QVBoxLayout(wrap)
             v.setContentsMargins(10, 8, 10, 8)
             v.setSpacing(6)
@@ -193,7 +332,7 @@ class WorkbenchPage(QWidget):
             cb = QCheckBox(title)
             cb.setChecked(bool(getattr(app_state, enabled_attr, True)))
             tip = QLabel("每段音频随机一个目标值，并在本段内平滑过渡")
-            tip.setStyleSheet("color:#93A4B7;")
+            tip.setObjectName("MutedLabel")
 
             h1.addWidget(cb)
             h1.addWidget(tip)
@@ -205,7 +344,247 @@ class WorkbenchPage(QWidget):
             h2.setSpacing(10)
 
             cmb = QComboBox()
+            cmb.setObjectName("VarCombo")
             for opt in _delta_options(kind):
                 cmb.addItem(f"设定值基础上 {opt}", _normalize_delta(opt))
             cur = str(getattr(app_state, delta_attr, default_delta) or default_delta)
-            idx = cmb.findData(c
+            idx = cmb.findData(cur)
+            cmb.setCurrentIndex(idx if idx >= 0 else 0)
+            cmb.setFixedHeight(30)
+
+            h2.addWidget(cmb, 1)
+
+            v.addWidget(row1)
+            v.addWidget(row2)
+
+            def _save_enabled(on: bool):
+                setattr(app_state, enabled_attr, bool(on))
+                self.ctx["save_runtime_flag"](enabled_attr, bool(on))
+
+            def _save_delta():
+                d = cmb.currentData()
+                setattr(app_state, delta_attr, d)
+                self.ctx["save_runtime_flag"](delta_attr, d)
+
+            cb.toggled.connect(_save_enabled)
+            cmb.currentIndexChanged.connect(lambda _=None: _save_delta())
+
+            return wrap
+
+        var_body.addWidget(_make_var_block("变调节", "var_pitch_enabled", "var_pitch_delta", "-5~+5", "pitch"))
+        var_body.addWidget(_make_var_block("变音量", "var_volume_enabled", "var_volume_delta", "+0~+10", "volume"))
+        var_body.addWidget(_make_var_block("变语速", "var_speed_enabled", "var_speed_delta", "+0~+10", "speed"))
+
+        # 应用对象（主播/助播）
+        targets = QWidget()
+        th = QHBoxLayout(targets)
+        th.setContentsMargins(8, 6, 8, 0)
+        th.setSpacing(18)
+
+        chk_anchor = QCheckBox("主播")
+        chk_zhuli = QCheckBox("助播")
+        chk_anchor.setChecked(bool(getattr(app_state, "var_apply_anchor", True)))
+        chk_zhuli.setChecked(bool(getattr(app_state, "var_apply_zhuli", True)))
+
+        def _save_targets():
+            app_state.var_apply_anchor = chk_anchor.isChecked()
+            app_state.var_apply_zhuli = chk_zhuli.isChecked()
+            self.ctx["save_runtime_flag"]("var_apply_anchor", app_state.var_apply_anchor)
+            self.ctx["save_runtime_flag"]("var_apply_zhuli", app_state.var_apply_zhuli)
+
+        chk_anchor.toggled.connect(lambda _=None: _save_targets())
+        chk_zhuli.toggled.connect(lambda _=None: _save_targets())
+
+        th.addWidget(chk_anchor)
+        th.addWidget(chk_zhuli)
+        th.addStretch(1)
+        var_body.addWidget(targets)
+
+        return var_card
+
+    def _switch_row(self, text: str, sw: QWidget) -> QWidget:
+        w = QWidget()
+        h = QHBoxLayout(w)
+        h.setContentsMargins(8, 6, 8, 6)
+        h.setSpacing(10)
+        h.addWidget(QLabel(text))
+        h.addStretch(1)
+        h.addWidget(sw)
+        return w
+
+    def _button_row(self, text: str, btn: QPushButton) -> QWidget:
+        w = QWidget()
+        h = QHBoxLayout(w)
+        h.setContentsMargins(8, 6, 8, 6)
+        h.setSpacing(10)
+        h.addWidget(QLabel(text))
+        h.addStretch(1)
+        h.addWidget(btn)
+        return w
+
+    # ---------------- log ----------------
+    def _hook_stdout(self):
+        if WorkbenchPage._stdout_hooked:
+            return
+        WorkbenchPage._stdout_hooked = True
+
+        self.log_stream = LogStream()
+        self.log_stream.text_written.connect(self.append_log)
+
+        from logger_bootstrap import SafeTee, log_fp
+        sys.stdout = SafeTee(self.log_stream, log_fp)
+        sys.stderr = SafeTee(self.log_stream, log_fp)
+
+    def append_log(self, text: str):
+        self.console.moveCursor(QTextCursor.End)
+        self.console.insertPlainText(text)
+        self.console.ensureCursorVisible()
+        self.console.repaint()
+
+    def clear_log(self):
+        self.console.clear()
+        print("🧹 日志已清空")
+
+    # ---------------- switches ----------------
+    def toggle_danmaku_reply(self, checked: bool):
+        app_state.enable_danmaku_reply = bool(checked)
+        self.ctx["save_runtime_flag"]("enable_danmaku_reply", app_state.enable_danmaku_reply)
+        print("📣 弹幕自动回复已开启" if checked else "📣 弹幕自动回复已关闭")
+
+    def toggle_auto_reply(self, checked: bool):
+        app_state.enable_auto_reply = bool(checked)
+        self.ctx["save_runtime_flag"]("enable_auto_reply", app_state.enable_auto_reply)
+        print("💬 关键词自动回复：已开启" if checked else "💬 关键词自动回复：已关闭")
+
+    def toggle_report_switch(self, checked: bool):
+        app_state.enable_voice_report = bool(checked)
+        self.ctx["save_runtime_flag"]("enable_voice_report", app_state.enable_voice_report)
+        print("⏱ 自动语音报时：已开启" if checked else "⏱ 自动语音报时：已关闭")
+
+    def toggle_zhuli(self, checked: bool):
+        app_state.enable_zhuli = bool(checked)
+        self.ctx["save_runtime_flag"]("enable_zhuli", app_state.enable_zhuli)
+        print("🎧 助播关键词语音：已开启" if checked else "🎧 助播关键词语音：已关闭")
+
+    # ---------------- report interval dialog ----------------
+    def set_report_interval(self):
+        from audio import voice_reporter
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("⏱ 语音报时间间隔")
+        dlg.setFixedSize(320, 170)
+
+        layout = QVBoxLayout(dlg)
+        layout.setContentsMargins(18, 18, 18, 14)
+        layout.setSpacing(10)
+
+        title = QLabel("设置语音报时间隔（分钟）")
+        title.setAlignment(Qt.AlignCenter)
+        title.setStyleSheet("font-size:14px;font-weight:bold;")
+
+        desc = QLabel("最低 5 分钟")
+        desc.setAlignment(Qt.AlignCenter)
+        desc.setStyleSheet("color:#666;")
+
+        spin = QSpinBox()
+        spin.setRange(1, 60)
+        spin.setValue(voice_reporter.REPORT_INTERVAL_MINUTES)
+        spin.setSuffix(" 分钟")
+        spin.setFixedWidth(160)
+
+        row = QHBoxLayout()
+        row.addStretch()
+        row.addWidget(spin)
+        row.addStretch()
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        btn_cancel = QPushButton("取消")
+        btn_ok = QPushButton("确定")
+        btn_ok.setDefault(True)
+        btn_row.addWidget(btn_cancel)
+        btn_row.addWidget(btn_ok)
+
+        btn_cancel.clicked.connect(dlg.reject)
+        btn_ok.clicked.connect(dlg.accept)
+
+        layout.addWidget(title)
+        layout.addWidget(desc)
+        layout.addLayout(row)
+        layout.addStretch(1)
+        layout.addLayout(btn_row)
+
+        if dlg.exec() == QDialog.Accepted:
+            val = spin.value()
+            voice_reporter.REPORT_INTERVAL_MINUTES = val
+            voice_reporter.save_report_interval(val)
+            self.btn_report_interval.setText(f"⏱ 报时间隔：{val} 分钟")
+            print(f"⏱ 报时间隔已设置为：{val} 分钟")
+
+    # ---------------- start system ----------------
+    def start_system(self):
+        if self._main_started:
+            return
+
+        from api.voice_api import VoiceApiClient
+        from main import main
+
+        app_state.license_key = self.ctx["license_key"]
+        app_state.machine_code = get_machine_code()
+
+        # 如果需要云端音色，先校验默认模型
+        if app_state.enable_voice_report or app_state.enable_danmaku_reply:
+            try:
+                client = VoiceApiClient(BASE_URL, self.ctx["license_key"])
+                resp = client.list_models()
+                if not isinstance(resp, dict) or resp.get("code") != 0:
+                    QMessageBox.critical(self, "启动失败", f"无法获取云端音色列表：\n{resp}")
+                    return
+
+                models = resp.get("data", [])
+                if not models:
+                    app_state.current_model_id = None
+                    QMessageBox.warning(self, "缺少音色模型", "当前账号尚未上传任何音色模型，请先到【音色模型】页面上传并设置默认。")
+                    self.ctx["jump_to"]("音色模型")
+                    return
+
+                default_models = [m for m in models if m.get("is_default")]
+                if not default_models:
+                    app_state.current_model_id = None
+                    QMessageBox.warning(self, "未设置默认音色", "请先到【音色模型】页面设置一个默认主播音色。")
+                    self.ctx["jump_to"]("音色模型")
+                    return
+
+                app_state.current_model_id = int(default_models[0]["id"])
+            except Exception as e:
+                QMessageBox.critical(self, "启动校验失败", f"音色服务器连接失败：\n{e}")
+                return
+
+        self._main_started = True
+        self.btn_start.setEnabled(False)
+
+        t = threading.Thread(target=main, args=(self.ctx["license_key"],), daemon=True)
+        t.start()
+        print("🚀 系统已启动（后台运行）")
+
+    # ---------------- test danmaku ----------------
+    def send_test_danmaku(self):
+        text = (self.test_input.text() or "").strip()
+        if not text:
+            return
+
+        print("🧪 本地模拟弹幕：", text)
+
+        cb = getattr(app_state, "on_danmaku_cb", None)
+        if not cb:
+            print("⚠️ 系统尚未启动或未注册回调：请先点【启动系统】")
+            return
+
+        try:
+            reply = cb("测试用户", text) or ""
+            if reply.strip():
+                print("🧪 本次命中文本回复：", reply)
+        except Exception as e:
+            print("❌ 模拟弹幕异常：", e)
+
+        self.test_input.clear()

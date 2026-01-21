@@ -8,10 +8,11 @@ from PySide6.QtWidgets import (
     QInputDialog, QFileDialog
 )
 
-from ui.dialogs import confirm_dialog
 from core.audio_tools import reorder_audio_files, smart_split_audio_to_dir, scan_audio_prefixes
 from core.keyword_io import load_keywords
 from config import AUDIO_BASE_DIR, SUPPORTED_AUDIO_EXTS
+
+from ui.dialogs import confirm_dialog, text_input_dialog, int_input_dialog, choice_dialog, ChoiceItem
 
 
 class AudioToolsPage(QWidget):
@@ -70,32 +71,33 @@ class AudioToolsPage(QWidget):
             QMessageBox.warning(self, "错误", f"音频目录不存在：\n{AUDIO_BASE_DIR}")
             return
 
-        raw_name, ok = QInputDialog.getText(
-            self, "按序号复制音频",
-            "请输入源音频文件名（可不带后缀）：\n例如：烟管165 或 烟管165.mp3"
+        raw_name, ok = text_input_dialog(
+            self,
+            "按序号复制音频",
+            "请输入源音频文件名（可不带后缀）：\n例如：烟管165 或 烟管165.mp3",
+            placeholder="例如：烟管165"
         )
         if not ok or not raw_name.strip():
             return
         raw_name = raw_name.strip()
 
-        count, ok = QInputDialog.getInt(self, "复制数量", "请输入需要生成的份数：", 10, 1, 9999)
+        count, ok = int_input_dialog(self, "复制数量", "请输入需要生成的份数：", value=10, min_value=1, max_value=9999)
         if not ok:
             return
 
-        box = QMessageBox(self)
-        box.setWindowTitle("命名冲突处理方式")
-        box.setText("如果目标序号已存在，如何处理？")
-
-        btn_auto = box.addButton("自动续号（不覆盖）", QMessageBox.AcceptRole)
-        btn_force = box.addButton("强制覆盖原文件", QMessageBox.DestructiveRole)
-        btn_cancel = box.addButton("取消操作", QMessageBox.RejectRole)
-
-        box.exec()
-        clicked = box.clickedButton()
-
-        if clicked == btn_cancel:
+        choice, ok = choice_dialog(
+            self,
+            "命名冲突处理方式",
+            "如果目标序号已存在，如何处理？",
+            items=[
+                ChoiceItem("自动续号（不覆盖）", role="normal"),
+                ChoiceItem("强制覆盖原文件", role="destructive"),
+                ChoiceItem("取消操作", role="cancel"),
+            ],
+        )
+        if not ok or choice == "取消操作":
             return
-        overwrite = (clicked == btn_force)
+        overwrite = (choice == "强制覆盖原文件")
 
         base_no_ext = os.path.splitext(raw_name)[0]
         src_file = None

@@ -55,3 +55,7 @@ KEYWORD_SIZE = "尺寸"
 
 RANDOM_PUSH_INTERVAL = 0.8
 MAIN_TICK_INTERVAL = 0.25
+
+
+# 说明文档（可改成你的真实文档地址）
+DOC_URL = "https://share.note.youdao.com/s/Ae6RJS7k"
