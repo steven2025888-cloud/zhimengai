@@ -101,9 +101,6 @@ def run_engine(license_key: str):
         except Exception:
             return {}
 
-    def get_runtime_zhuli_keywords() -> dict:
-        from core.zhuli_keyword_io import load_zhuli_keywords
-        return load_zhuli_keywords()
 
     def on_ws_message(data):
         if not isinstance(data, dict):
@@ -231,6 +228,17 @@ def run_engine(license_key: str):
 
     def on_event(nickname: str, content: str, type_: int):
         ws.push(nickname, content, type_)
+
+        # ===== 视频号事件：关注/点赞触发音频 =====
+        # LiveListener: 关注 type_=4 (msgType=20078), 点赞 type_=2 (msgType=20122)
+        # 我们统一映射到 WSCommandRouter：-2 关注 / -3 点赞（内部做冷却+开关+入队）
+        try:
+            if int(type_) == 4:  # 关注
+                router.handle(-2)
+            elif int(type_) == 2:  # 点赞
+                router.handle(-3)
+        except Exception as e:
+            print("on_event follow/like error:", e)
 
     def random_push_loop():
         from core.state import app_state as s

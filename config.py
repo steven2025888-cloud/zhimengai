@@ -19,7 +19,7 @@ FFMPEG_EXE = FFMPEG_DIR / "ffmpeg.exe"
 zhandian = "api.zhimengai.xyz"
 BASE_URL = "https://" + zhandian
 UPDATE_API = BASE_URL + "/api/update/check"
-CURRENT_VERSION = "1.0.4"
+CURRENT_VERSION = "1.0.5"
 
 WS_URL = "wss://" + zhandian + "/live"
 
@@ -59,6 +59,14 @@ AUDIO_BASE_DIR.mkdir(parents=True, exist_ok=True)
 # ================== 助播音频目录 ==================
 ZHULI_AUDIO_DIR = BASE_DIR / "zhuli_audio"
 ZHULI_AUDIO_DIR.mkdir(parents=True, exist_ok=True)
+
+# ================== 关注音频目录 ==================
+other_gz_audio = BASE_DIR / "other_audio/关注"
+other_gz_audio.mkdir(parents=True, exist_ok=True)
+
+# ================== 点赞音频目录 ==================
+other_dz_audio = BASE_DIR / "other_audio/点赞"
+other_dz_audio.mkdir(parents=True, exist_ok=True)
 
 
 # ================== 关键词目录 ==================

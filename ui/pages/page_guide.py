@@ -268,8 +268,8 @@ class GuidePage(QWidget):
     def _open_doc(self):
         # 这里不强依赖你的 config 字段：如果你已有 KEYWORD_RULE_URL/DOC_URL，可在此接入
         try:
-            from config import KEYWORD_RULE_URL  # 你之前加过
-            url = (KEYWORD_RULE_URL or "").strip()
+            from config import DOC_URL  # 你之前加过
+            url = (DOC_URL or "").strip()
             if url:
                 QDesktopServices.openUrl(QUrl(url))
                 return

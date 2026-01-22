@@ -12,9 +12,20 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QIcon
 
 from core.state import app_state
-from config import AUDIO_BASE_DIR
+from config import AUDIO_BASE_DIR, ZHULI_AUDIO_DIR, other_gz_audio, other_dz_audio
 
 print = functools.partial(print, flush=True)
+
+
+def _safe_mkdir(p: str) -> str:
+    p = str(p or "").strip()
+    if not p:
+        return ""
+    try:
+        os.makedirs(p, exist_ok=True)
+        return p
+    except Exception:
+        return ""
 
 
 def bootstrap_runtime_into_app_state():
@@ -23,13 +34,27 @@ def bootstrap_runtime_into_app_state():
 
     runtime = load_runtime_state() or {}
 
-    # 主播音频目录（用户可选，默认 AUDIO_BASE_DIR）
-    app_state.anchor_audio_dir = str(runtime.get("anchor_audio_dir", str(AUDIO_BASE_DIR)) or str(AUDIO_BASE_DIR))
-    try:
-        os.makedirs(app_state.anchor_audio_dir, exist_ok=True)
-    except Exception:
-        app_state.anchor_audio_dir = str(AUDIO_BASE_DIR)
+    # ===== 主播音频目录（用户可选，默认 AUDIO_BASE_DIR）=====
+    anchor_default = str(AUDIO_BASE_DIR)
+    app_state.anchor_audio_dir = str(runtime.get("anchor_audio_dir", anchor_default) or anchor_default)
+    app_state.anchor_audio_dir = _safe_mkdir(app_state.anchor_audio_dir) or anchor_default
 
+    # ===== 助播音频目录（用户可选，默认 ZHULI_AUDIO_DIR）=====
+    zhuli_default = str(ZHULI_AUDIO_DIR)
+    app_state.zhuli_audio_dir = str(runtime.get("zhuli_audio_dir", zhuli_default) or zhuli_default)
+    app_state.zhuli_audio_dir = _safe_mkdir(app_state.zhuli_audio_dir) or zhuli_default
+
+    # ===== 关注/点赞目录（用户可选，默认 other_gz_audio / other_dz_audio）=====
+    follow_default = str(other_gz_audio)
+    like_default = str(other_dz_audio)
+
+    app_state.follow_audio_dir = str(runtime.get("follow_audio_dir", follow_default) or follow_default)
+    app_state.like_audio_dir = str(runtime.get("like_audio_dir", like_default) or like_default)
+
+    app_state.follow_audio_dir = _safe_mkdir(app_state.follow_audio_dir) or follow_default
+    app_state.like_audio_dir = _safe_mkdir(app_state.like_audio_dir) or like_default
+
+    # ===== 其他开关/参数（你原来的逻辑保持）=====
     app_state.enable_voice_report = bool(runtime.get("enable_voice_report", False))
     app_state.enable_danmaku_reply = bool(runtime.get("enable_danmaku_reply", False))
     app_state.enable_auto_reply = bool(runtime.get("enable_auto_reply", False))
@@ -49,6 +74,15 @@ def bootstrap_runtime_into_app_state():
 
     app_state.var_apply_anchor = bool(runtime.get("var_apply_anchor", True))
     app_state.var_apply_zhuli = bool(runtime.get("var_apply_zhuli", True))
+
+    # ===== 关注/点赞 播放开关 + 冷却间隔 =====
+    app_state.enable_follow_audio = bool(runtime.get("enable_follow_audio", False))
+    app_state.enable_like_audio = bool(runtime.get("enable_like_audio", False))
+
+    try:
+        app_state.follow_like_cooldown_seconds = int(runtime.get("follow_like_cooldown_seconds", 300) or 300)
+    except Exception:
+        app_state.follow_like_cooldown_seconds = 300
 
 
 def save_runtime_flag(key: str, value):
@@ -76,17 +110,12 @@ class MainWindow(QWidget):
 
         self.setObjectName("MainWindow")
 
-
         self.license_key = license_key
         self.resource_path = resource_path_func
         self.expire_time = expire_time
 
         self.setWindowTitle("织梦AI直播工具")
         self.setWindowIcon(QIcon(self.resource_path("logo.ico")))
-
-        # ===== Layout: Left menu + Right stacked pages =====
-        from PySide6.QtCore import Qt
-        from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout
 
         # ===== 外层：背景容器（只改它的背景色）=====
         outer = QVBoxLayout(self)
@@ -112,14 +141,13 @@ class MainWindow(QWidget):
         left_l.setSpacing(0)
         root.addWidget(left)
 
-        # 你的 side 仍然是 QListWidget，只是放进 left 容器
         self.side = QListWidget()
-        self.side.setObjectName("SideMenu")  # 你原来就有 :contentReference[oaicite:1]{index=1}
+        self.side.setObjectName("SideMenu")
         self.side.setFixedWidth(130)
         self.side.setSpacing(6)
         left_l.addWidget(self.side, 1)
 
-        # ===== 右侧容器（功能区都在这里）=====
+        # ===== 右侧容器 =====
         right = QWidget()
         right.setObjectName("RightPane")
         right.setAttribute(Qt.WA_StyledBackground, True)  # ✅关键
@@ -128,9 +156,7 @@ class MainWindow(QWidget):
         right_l.setSpacing(12)
         root.addWidget(right, 1)
 
-        # 下面你原来的 top / stack 都照旧加到 right_l
-
-        # ===== Top title (会随页面切换) =====
+        # ===== Top title =====
         top = QHBoxLayout()
         self.lbl_title = QLabel("AI工作台")
         self.lbl_title.setStyleSheet("font-size: 20px; font-weight: 800;")
@@ -156,12 +182,12 @@ class MainWindow(QWidget):
         self.stack = QStackedWidget()
         right_l.addWidget(self.stack, 1)
 
-        # ===== Page registry（每个页面一个 py 文件）=====
+        # ===== Page registry =====
         self.pages: List[PageSpec] = self._build_page_specs()
 
         for p in self.pages:
             item = QListWidgetItem(p.name)
-            item.setTextAlignment(Qt.AlignCenter)  # 菜单文字居中
+            item.setTextAlignment(Qt.AlignCenter)
             self.side.addItem(item)
             self.stack.addWidget(p.factory())
 
@@ -178,10 +204,11 @@ class MainWindow(QWidget):
         from ui.pages.page_voice_model import VoiceModelPage
         from ui.pages.page_ai_reply import AiReplyPage
         from ui.pages.page_placeholder import PlaceholderPage
-        from ui.audio_tools_page import AudioToolsPage
+
+        # ✅ 新页：音频目录工具（替代 AudioToolsPage）
+        from ui.pages.page_audio_dir_tools import AudioDirToolsPage
 
         def ctx():
-            # 给页面用的“上下文”
             return {
                 "main": self,
                 "resource_path": self.resource_path,
@@ -198,13 +225,14 @@ class MainWindow(QWidget):
             PageSpec("关键词设置", lambda: KeywordPage(ctx())),
             PageSpec("助播设置", lambda: ZhuliPage(ctx())),
             PageSpec("音色模型", lambda: VoiceModelPage(ctx())),
-            PageSpec("音频工具", lambda: AudioToolsPage(self)),  # 你原本就独立
+
+            # ✅ 合并后的页面
+            PageSpec("音频目录工具", lambda: AudioDirToolsPage(ctx())),
+
             PageSpec("AI回复", lambda: AiReplyPage(ctx())),
             PageSpec("回复弹窗", lambda: PlaceholderPage("回复弹窗（开发中）")),
             PageSpec("话术改写", lambda: PlaceholderPage("话术改写（开发中）")),
-            PageSpec("自动切换", lambda: PlaceholderPage("自动切换（开发中）")),
             PageSpec("评论管理", lambda: PlaceholderPage("评论管理（开发中）")),
-
         ]
 
     def _on_page_changed(self, idx: int):

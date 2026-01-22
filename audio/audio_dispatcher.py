@@ -9,7 +9,8 @@ from collections import deque
 import sounddevice as sd
 
 from core.state import AppState
-from audio.audio_player import play_audio_interruptible, play_audio_and_wait, set_paused as _player_set_paused, stop_playback as _player_stop
+from audio.audio_player import play_audio_interruptible, play_audio_and_wait, set_paused as _player_set_paused, \
+    stop_playback as _player_stop
 import time
 import tempfile
 import subprocess
@@ -29,6 +30,10 @@ PLAY_URGENT = "PLAY_URGENT"
 # 录音急插（与急插同队列，仅用于标记来源）
 PLAY_RECORD = "PLAY_RECORD"
 
+# 关注/点赞事件音频
+PLAY_FOLLOW = "PLAY_FOLLOW"
+PLAY_LIKE = "PLAY_LIKE"
+
 
 @dataclass
 class AudioCommand:
@@ -47,6 +52,10 @@ class AudioDispatcher:
         self.zhuli_q: deque[AudioCommand] = deque()
         self.random_q: deque[AudioCommand] = deque()
 
+        # 关注/点赞队列（优先于轮播，低于主播/助播）
+        self.follow_q: deque[AudioCommand] = deque()
+        self.like_q: deque[AudioCommand] = deque()
+
         # 插播/急插队列
         self.insert_q: deque[AudioCommand] = deque()
         self.urgent_q: deque[AudioCommand] = deque()
@@ -57,7 +66,6 @@ class AudioDispatcher:
 
         # stop_event：用于可中断播放（轮播一定用；关键词/报时靠 sd.stop 也能停）
         self.stop_event = threading.Event()
-
 
         # ===== 暂停播放（UI 控制）=====
         self.paused: bool = False
@@ -131,7 +139,7 @@ class AudioDispatcher:
     def _get_duration_sec(self, src_path: str) -> float:
         """尽量可靠地拿到音频时长（秒）。失败就返回 0。"""
         try:
-            out = subprocess.check_output(
+            out = self._check_output_hidden(
                 [
                     self._ffprobe_bin(),
                     "-v", "error",
@@ -139,8 +147,9 @@ class AudioDispatcher:
                     "-of", "default=noprint_wrappers=1:nokey=1",
                     src_path,
                 ],
-                stderr=subprocess.STDOUT,
+                timeout=8,
             )
+
             v = float(out.decode("utf-8", "ignore").strip() or "0")
             return max(0.0, v)
         except Exception:
@@ -166,6 +175,40 @@ class AudioDispatcher:
     def _ffmpeg_bin(self) -> str:
         # 优先用系统 ffmpeg；你如果有自带 ffmpeg，可在这里加路径
         return shutil.which("ffmpeg") or "ffmpeg"
+
+    def _subprocess_hidden_kwargs(self) -> dict:
+        """Windows 下隐藏子进程控制台窗口（ffmpeg/ffprobe 不再闪窗）"""
+        if os.name != "nt":
+            return {}
+        # CREATE_NO_WINDOW = 0x08000000
+        CREATE_NO_WINDOW = 0x08000000
+        si = subprocess.STARTUPINFO()
+        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        si.wShowWindow = 0
+        return {"creationflags": CREATE_NO_WINDOW, "startupinfo": si}
+
+    def _run_hidden(self, cmd: list[str], check: bool = False, timeout: float | None = None):
+        """subprocess.run 的隐藏窗口封装"""
+        kw = self._subprocess_hidden_kwargs()
+        return subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            stdin=subprocess.DEVNULL,
+            timeout=timeout,
+            check=check,
+            **kw,
+        )
+
+    def _check_output_hidden(self, cmd: list[str], timeout: float | None = None) -> bytes:
+        """subprocess.check_output 的隐藏窗口封装"""
+        kw = self._subprocess_hidden_kwargs()
+        return subprocess.check_output(
+            cmd,
+            stderr=subprocess.STDOUT,
+            timeout=timeout,
+            **kw,
+        )
 
     def _pick_next_targets(self) -> tuple[int, int, int]:
         """每段音频随机一个目标值（绝对值），并让下一段从上一段目标值继续过渡。"""
@@ -337,6 +380,8 @@ class AudioDispatcher:
 
         cmd = [
             self._ffmpeg_bin(),
+            "-hide_banner",
+            "-loglevel", "error",
             "-y",
             "-i", src_path,
             "-vn",
@@ -348,7 +393,11 @@ class AudioDispatcher:
         ]
 
         try:
-            subprocess.run(cmd, check=True)
+            r = self._run_hidden(cmd, check=False, timeout=max(30, dur * 3))
+            if r.returncode != 0:
+                err = (r.stderr or b"").decode("utf-8", "ignore")[-2000:]
+                out = (r.stdout or b"").decode("utf-8", "ignore")[-2000:]
+                raise RuntimeError(f"ffmpeg failed rc={r.returncode}\nSTDERR:\n{err}\nSTDOUT:\n{out}")
 
             # 本段结束：只推进“本段实际应用”的项（被保护的项保持不动）
             if apply_pitch:
@@ -379,8 +428,11 @@ class AudioDispatcher:
     def has_pending(self) -> bool:
         with self._lock:
             return bool(
-                self.report_q or self.urgent_q or self.insert_q or self.anchor_q or self.zhuli_q or self.random_q)
-
+                self.report_q or self.urgent_q or self.insert_q
+                or self.anchor_q or self.zhuli_q
+                or self.follow_q or self.like_q
+                or self.random_q
+            )
     def is_idle(self) -> bool:
         return (not self.current_playing) and (not self.has_pending())
 
@@ -490,11 +542,16 @@ class AudioDispatcher:
                 self.anchor_q.append(AudioCommand(name=PLAY_ANCHOR, path=path))
                 return
 
-            # 当前是轮播：打断轮播并记住恢复点
-            if self.current_playing and self.current_name == PLAY_RANDOM:
+            # 当前是低优先级（轮播/关注/点赞）：打断并记住恢复点
+            if self.current_playing and self.current_name in (PLAY_RANDOM, PLAY_FOLLOW, PLAY_LIKE):
                 if self.current_path:
-                    self.resume_after_high = self.current_path
-                print("📌 主播关键词（打断轮播）->", os.path.basename(path))
+                    if self.current_name == PLAY_RANDOM:
+                        self.resume_after_high = self.current_path
+                    elif self.current_name == PLAY_FOLLOW:
+                        self.follow_q.appendleft(AudioCommand(name=PLAY_FOLLOW, path=self.current_path))
+                    elif self.current_name == PLAY_LIKE:
+                        self.like_q.appendleft(AudioCommand(name=PLAY_LIKE, path=self.current_path))
+                print("📌 主播关键词（打断低优先级）->", os.path.basename(path))
                 self.stop_now()
                 self.random_q.clear()
                 self.anchor_q.append(AudioCommand(name=PLAY_ANCHOR, path=path))
@@ -514,7 +571,7 @@ class AudioDispatcher:
                 self.zhuli_q.append(AudioCommand(name=PLAY_ZHULI, path=path))
                 return
 
-            if self.current_playing and self.current_name == PLAY_RANDOM:
+            if self.current_playing and self.current_name in (PLAY_RANDOM, PLAY_FOLLOW, PLAY_LIKE):
                 if self.current_path:
                     self.resume_after_high = self.current_path
                 print("📌 助播关键词（打断轮播）->", os.path.basename(path))
@@ -549,7 +606,8 @@ class AudioDispatcher:
                     self.resume_after_high = self.current_path
 
             # 2) 打断一切（轮播/关键词/助播）
-            if self.current_playing and self.current_name in (PLAY_RANDOM, PLAY_ANCHOR, PLAY_ZHULI):
+            if self.current_playing and self.current_name in (PLAY_RANDOM, PLAY_ANCHOR, PLAY_ZHULI, PLAY_FOLLOW,
+                                                              PLAY_LIKE):
                 print("🕒 报时插播（打断一切）->", os.path.basename(report_path))
                 self.stop_now()
                 self.random_q.clear()
@@ -723,7 +781,6 @@ class AudioDispatcher:
             print("🎙️ 录音已结束，已急插播放 ->", os.path.basename(out))
         return out
 
-
     def get_record_level(self) -> float:
         """返回最近一次录音输入音量（0~1）。"""
         try:
@@ -731,7 +788,6 @@ class AudioDispatcher:
                 return float(getattr(self, "_rec_level", 0.0) or 0.0)
         except Exception:
             return 0.0
-
 
     def get_record_waveform(self, max_samples: int = 2048):
         """返回最近一段录音波形（list[float], -1~1）。用于抖音风波形 UI。"""
@@ -762,9 +818,132 @@ class AudioDispatcher:
             self.report_q.clear()
             self.anchor_q.clear()
             self.zhuli_q.clear()
+            self.follow_q.clear()
+            self.like_q.clear()
             self.random_q.clear()
             self.insert_q.clear()
             self.urgent_q.clear()
+
+    # ===================== 关注 / 点赞事件音频 =====================
+
+    def _other_audio_dirs(self):
+        """
+        返回 (follow_dir, like_dir, exts)。
+
+        默认优先读取 config.py 里的：
+          - other_gz_audio  (关注目录)
+          - other_dz_audio  (点赞目录)
+        若不存在，再退化到应用目录下 other_audio/关注 / other_audio/点赞
+
+        同时支持运行态覆写：
+          - state.follow_audio_dir
+          - state.like_audio_dir
+        """
+        from pathlib import Path
+        import os
+
+        # 1) 支持的音频后缀
+        try:
+            from config import SUPPORTED_AUDIO_EXTS
+            exts = tuple(str(e).lower() for e in SUPPORTED_AUDIO_EXTS)
+        except Exception:
+            exts = (".mp3", ".wav", ".aac", ".m4a", ".flac", ".ogg")
+
+        # 2) 基础目录（兜底用）
+        try:
+            from config import get_app_dir
+            base = Path(get_app_dir())
+        except Exception:
+            base = Path(os.getcwd())
+
+        # 3) 默认目录：优先用 config 里定义的 Path
+        cfg_follow = None
+        cfg_like = None
+        try:
+            from config import other_gz_audio, other_dz_audio
+            cfg_follow = other_gz_audio
+            cfg_like = other_dz_audio
+        except Exception:
+            cfg_follow = base / "other_audio" / "关注"
+            cfg_like = base / "other_audio" / "点赞"
+
+        # 4) 允许 UI/运行态覆写目录（优先级最高）
+        follow_override = str(getattr(self.state, "follow_audio_dir", "") or "").strip()
+        like_override = str(getattr(self.state, "like_audio_dir", "") or "").strip()
+
+        follow_dir = Path(follow_override).expanduser().resolve() if follow_override else Path(
+            cfg_follow).expanduser().resolve()
+        like_dir = Path(like_override).expanduser().resolve() if like_override else Path(
+            cfg_like).expanduser().resolve()
+
+        # 5) 确保目录存在
+        try:
+            follow_dir.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+        try:
+            like_dir.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+
+        return follow_dir, like_dir, exts
+
+    def _pick_random_audio_in_dir(self, folder) -> str | None:
+        """从指定目录递归随机挑一条音频。"""
+        from pathlib import Path
+        if not folder:
+            return None
+        try:
+            p = folder if hasattr(folder, "rglob") else Path(str(folder)).expanduser().resolve()
+        except Exception:
+            return None
+        if not p.exists() or (not p.is_dir()):
+            return None
+
+        # 复用全局支持后缀
+        try:
+            _, _, exts = self._other_audio_dirs()
+        except Exception:
+            exts = (".mp3", ".wav", ".aac", ".m4a", ".flac", ".ogg")
+
+        cands: list[str] = []
+        try:
+            for f in p.rglob("*"):
+                if f.is_file() and f.suffix.lower() in exts:
+                    cands.append(str(f))
+        except Exception:
+            return None
+        if not cands:
+            return None
+        return random.choice(cands)
+
+    def push_follow_event(self, wav_path: str | None = None):
+        if not self.state.live_ready:
+            return
+        with self._lock:
+            if not wav_path:
+                follow_dir, _, _ = self._other_audio_dirs()
+                wav_path = self._pick_random_audio_in_dir(follow_dir)
+            if not wav_path:
+                return
+
+            # ✅ 永远不打断：只排队
+            print("⭐ 关注音频排队 ->", os.path.basename(wav_path))
+            self.follow_q.append(AudioCommand(name=PLAY_FOLLOW, path=wav_path))
+
+    def push_like_event(self, wav_path: str | None = None):
+        if not self.state.live_ready:
+            return
+        with self._lock:
+            if not wav_path:
+                _, like_dir, _ = self._other_audio_dirs()
+                wav_path = self._pick_random_audio_in_dir(like_dir)
+            if not wav_path:
+                return
+
+            # ✅ 永远不打断：只排队
+            print("👍 点赞音频排队 ->", os.path.basename(wav_path))
+            self.like_q.append(AudioCommand(name=PLAY_LIKE, path=wav_path))
 
     # ===================== 助播：根据“主播正在播放的音频文件名”触发（文件夹随机音频） =====================
 
@@ -913,6 +1092,13 @@ class AudioDispatcher:
                 # 4) 主播关键词 > 助播
                 cmd = self._pick_next_high()
 
+                # 5) 关注/点赞（低于主播/助播，高于轮播）
+                if cmd is None:
+                    if self.follow_q:
+                        cmd = self.follow_q.popleft()
+                    elif self.like_q:
+                        cmd = self.like_q.popleft()
+
             # 3) 高优先级都空了：如果有被打断的轮播，先恢复它
             if cmd is None:
                 if self.resume_after_high:
@@ -933,7 +1119,8 @@ class AudioDispatcher:
             play_path = cmd.path
 
             # ✅ 变量调节：对 主播/助播/轮播 生效（按开关决定）
-            if cmd.name in (PLAY_ANCHOR, PLAY_ZHULI, PLAY_RANDOM, PLAY_INSERT, PLAY_URGENT, PLAY_RECORD):
+            if cmd.name in (PLAY_ANCHOR, PLAY_ZHULI, PLAY_FOLLOW, PLAY_LIKE, PLAY_RANDOM, PLAY_INSERT, PLAY_URGENT,
+                            PLAY_RECORD):
                 if cmd.name == PLAY_RANDOM:
                     should_apply = True  # 轮播也处理
                 else:
@@ -943,8 +1130,11 @@ class AudioDispatcher:
                     if cmd.name in (PLAY_INSERT, PLAY_URGENT, PLAY_RECORD):
                         should_apply = apply_anchor
                     else:
-                        should_apply = (cmd.name == PLAY_ANCHOR and apply_anchor) or (
-                                    cmd.name == PLAY_ZHULI and apply_zhuli)
+                        should_apply = (
+                                (cmd.name == PLAY_ANCHOR and apply_anchor)
+                                or (cmd.name == PLAY_ZHULI and apply_zhuli)
+                                or (cmd.name in (PLAY_FOLLOW, PLAY_LIKE) and apply_anchor)
+                        )
 
                 if should_apply:
                     play_path, tmp_to_cleanup = self._prepare_processed_audio(cmd.path)
@@ -974,6 +1164,12 @@ class AudioDispatcher:
                 if cmd.name == PLAY_ANCHOR and (not self.stop_event.is_set()):
                     self._enqueue_zhuli_for_anchor_finished(cmd.path)
 
+            elif cmd.name in (PLAY_FOLLOW, PLAY_LIKE):
+                self.stop_event.clear()
+                tag = "关注" if cmd.name == PLAY_FOLLOW else "点赞"
+                print(f"✨ 播放{tag}事件音频：", play_path)
+                play_audio_and_wait(play_path)
+
             elif cmd.name == PLAY_RANDOM:
                 print("🎲 播放轮播音频：", play_path)
                 self.stop_event.clear()
@@ -1000,8 +1196,6 @@ class AudioDispatcher:
                 self.current_name = None
                 self.current_path = None
 
-
-
     # ===================== 暂停 / 恢复 =====================
 
     def set_paused(self, paused: bool):
@@ -1024,8 +1218,6 @@ class AudioDispatcher:
             _player_set_paused(paused)
         except Exception:
             pass
-
-        print("⏸ 已暂停播放" if paused else "▶ 已恢复播放")
 
     def toggle_paused(self) -> bool:
         """切换暂停状态，返回切换后的 paused 值。"""

@@ -6,5 +6,12 @@
   "license_key": "ZM-2026-01-15-TEST-0003",
   "expire_time": "2026-02-14 23:59:59",
   "var_pitch_enabled": false,
-  "var_pitch_min_sec": 8
+  "var_pitch_min_sec": 8,
+  "follow_like_cooldown_seconds": 60,
+  "enable_follow_audio": true,
+  "enable_like_audio": true,
+  "anchor_audio_dir": "C:\\Users\\111\\Desktop\\zhimoAI\\zhubo_audio",
+  "zhuli_audio_dir": "C:\\Users\\111\\Desktop\\zhimoAI\\zhuli_audio",
+  "follow_audio_dir": "C:/Users/111/Desktop/助理",
+  "like_audio_dir": "C:\\Users\\111\\Desktop\\zhimoAI\\other_audio\\点赞"
 }

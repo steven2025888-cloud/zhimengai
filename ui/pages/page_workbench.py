@@ -59,6 +59,7 @@ class WorkbenchPage(QWidget):
             b.setMinimumHeight(BTN_H)  # 只限制最小高度
             b.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)  # 允许纵向/横向拉伸填满
 
+
             b.setMinimumWidth(150)
             if primary:
                 b.setStyleSheet("""
@@ -107,6 +108,22 @@ class WorkbenchPage(QWidget):
         self.sw_auto_reply = SwitchToggle(checked=app_state.enable_auto_reply)
         self.sw_danmaku_reply = SwitchToggle(checked=app_state.enable_danmaku_reply)
         self.sw_zhuli = SwitchToggle(checked=app_state.enable_zhuli)
+
+        # ===== 关注/点赞 播放开关 + 间隔（按钮样式与报时间隔一致）=====
+        # 默认值兜底（没灌 runtime 也不会报错）
+        if not hasattr(app_state, "enable_follow_audio"):
+            app_state.enable_follow_audio = False
+        if not hasattr(app_state, "enable_like_audio"):
+            app_state.enable_like_audio = False
+        if not hasattr(app_state, "follow_like_cooldown_seconds"):
+            app_state.follow_like_cooldown_seconds = 300  # 默认 5 分钟
+
+        self.sw_follow_audio = SwitchToggle(checked=app_state.enable_follow_audio)
+        self.sw_like_audio = SwitchToggle(checked=app_state.enable_like_audio)
+
+        mins = max(1, int(int(app_state.follow_like_cooldown_seconds or 300) / 60))
+        self.btn_follow_like_interval = QPushButton(f"⏱ {mins} 分钟")
+        self.btn_follow_like_interval.setFixedHeight(32)
 
         # ===== layout =====
         page = QWidget()
@@ -190,6 +207,70 @@ class WorkbenchPage(QWidget):
         self.btn_insert_audio.clicked.connect(self.choose_insert_audio)
         self.btn_urgent_audio.clicked.connect(self.choose_urgent_audio)
         self.btn_record_urgent.clicked.connect(self.open_record_urgent_dialog)
+
+        self.btn_follow_like_interval.clicked.connect(self.set_follow_like_interval)
+        self.sw_follow_audio.toggled.connect(self.toggle_follow_audio)
+        self.sw_like_audio.toggled.connect(self.toggle_like_audio)
+
+    def toggle_follow_audio(self, checked: bool):
+        app_state.enable_follow_audio = bool(checked)
+        self.ctx["save_runtime_flag"]("enable_follow_audio", app_state.enable_follow_audio)
+        print("⭐ 关注语音播放：已开启" if checked else "⭐ 关注语音播放：已关闭")
+
+    def toggle_like_audio(self, checked: bool):
+        app_state.enable_like_audio = bool(checked)
+        self.ctx["save_runtime_flag"]("enable_like_audio", app_state.enable_like_audio)
+        print("👍 点赞语音播放：已开启" if checked else "👍 点赞语音播放：已关闭")
+
+    def set_follow_like_interval(self):
+        dlg = QDialog(self)
+        dlg.setWindowTitle("⏳ 点赞/关注时间间隔")
+        dlg.setFixedSize(320, 180)
+
+        layout = QVBoxLayout(dlg)
+        layout.setContentsMargins(18, 18, 18, 14)
+        layout.setSpacing(10)
+
+        title = QLabel("设置点赞/关注触发间隔（分钟）")
+        title.setAlignment(Qt.AlignCenter)
+        title.setStyleSheet("font-size:14px;font-weight:bold;")
+
+
+        spin = QSpinBox()
+        spin.setRange(1, 60)  # 最小值强制 5（和报时间隔一致）
+        cur_mins = max(1, int(int(getattr(app_state, "follow_like_cooldown_seconds", 300) or 300) / 60))
+        spin.setValue(cur_mins)
+        spin.setSuffix(" 分钟")
+        spin.setFixedWidth(160)
+        spin.setStyleSheet("color:#000;")
+
+        row = QHBoxLayout()
+        row.addStretch()
+        row.addWidget(spin)
+        row.addStretch()
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        btn_cancel = QPushButton("取消")
+        btn_ok = QPushButton("确定")
+        btn_ok.setDefault(True)
+        btn_row.addWidget(btn_cancel)
+        btn_row.addWidget(btn_ok)
+
+        btn_cancel.clicked.connect(dlg.reject)
+        btn_ok.clicked.connect(dlg.accept)
+
+        layout.addWidget(title)
+        layout.addLayout(row)
+        layout.addStretch(1)
+        layout.addLayout(btn_row)
+
+        if dlg.exec() == QDialog.Accepted:
+            mins = max(1, int(spin.value()))
+            app_state.follow_like_cooldown_seconds = mins * 60
+            self.ctx["save_runtime_flag"]("follow_like_cooldown_seconds", app_state.follow_like_cooldown_seconds)
+            self.btn_follow_like_interval.setText(f"⏱ {mins} 分钟")
+            print(f"⏳ 点赞/关注触发间隔：已设置为 {mins} 分钟")
 
     # ---------------- UI blocks ----------------
     def _make_card(self, title_text: str):
@@ -747,7 +828,34 @@ class WorkbenchPage(QWidget):
         auto_body.addWidget(self._switch_row("📣 弹幕语音回复", self.sw_danmaku_reply))
         auto_body.addWidget(self._switch_row("🎧 助播关键词语音", self.sw_zhuli))
 
+        auto_body.addWidget(self._switch_row("⭐ 关注语音播放", self.sw_follow_audio))
+        auto_body.addWidget(self._switch_row("👍 点赞语音播放", self.sw_like_audio))
+        auto_body.addWidget(self._button_row("⏳ 点赞/关注间隔", self.btn_follow_like_interval))
+
         return auto_card
+
+    def _edit_row(self, text: str, edt: QLineEdit) -> QWidget:
+        w = QWidget()
+        h = QHBoxLayout(w)
+        h.setContentsMargins(8, 6, 8, 6)
+        h.setSpacing(10)
+        h.addWidget(QLabel(text))
+        h.addStretch(1)
+        edt.setFixedHeight(30)
+        edt.setMinimumWidth(160)
+        h.addWidget(edt)
+        return w
+
+    def _spin_row(self, text: str, sp: QSpinBox) -> QWidget:
+        w = QWidget()
+        h = QHBoxLayout(w)
+        h.setContentsMargins(8, 6, 8, 6)
+        h.setSpacing(10)
+        h.addWidget(QLabel(text))
+        h.addStretch(1)
+        h.addWidget(sp)
+        return w
+
 
     def _make_var_card(self):
         # 变量调节区域：保留你原逻辑（每段音频随机一个目标值并平滑过渡）

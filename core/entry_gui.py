@@ -68,6 +68,7 @@ def run():
     license_key = login.edit.text().strip()
 
     win = MainWindow(resource_path, expire_time=expire_time, license_key=license_key)
+
     win.show()
 
     qss_path = Path(resource_path("ui/style.qss"))

@@ -282,7 +282,7 @@ class LicenseLoginDialog(QDialog):
         sub.setObjectName("sub")
 
         self.edit = QLineEdit()
-        self.edit.setPlaceholderText("请输入您的授权卡密（例如：ZM-2026-XXXX）")
+        self.edit.setPlaceholderText("请输入您的授权卡密（例如：2RFH-MOFU-xxxx-xxxx）")
 
         self.btn = QPushButton("立即验证并进入系统")
         self.btn.clicked.connect(self.do_login)

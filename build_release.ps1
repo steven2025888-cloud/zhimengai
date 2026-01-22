@@ -1,17 +1,25 @@
-$ErrorActionPreference = "Stop"
+﻿$ErrorActionPreference = "Stop"
 
 # Avoid garbled output
 chcp 65001 | Out-Null
-[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()
-$OutputEncoding = [System.Text.UTF8Encoding]::new()
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($true)
+$OutputEncoding = [System.Text.UTF8Encoding]::new($true)
 
 $ProjectRoot = $PSScriptRoot
 $VenvPython  = Join-Path $ProjectRoot ".venv\Scripts\python.exe"
 if (!(Test-Path $VenvPython)) { throw "Cannot find venv python: $VenvPython" }
 
+# ========== App meta ==========
+# 建议：保持中文名一致（用于目录/安装包/快捷方式）
+$AppNameCN = "AI织梦直播助手"
+$ExeNameCN = "AI织梦直播助手.exe"
+
+# 版本号：你可以改成从某个文件读取（例如 version.txt）
+$AppVersion = "1.0.0"
+
 $Desktop = [Environment]::GetFolderPath('Desktop')
-$Stamp = Get-Date -Format "yyyyMMdd_HHmmss"
-$OutDir = Join-Path $Desktop ("ZhimoAI_Release_" + $Stamp)
+$Stamp   = Get-Date -Format "yyyyMMdd_HHmmss"
+$OutDir  = Join-Path $Desktop ("ZhimoAI_Release_" + $Stamp)
 
 # Everything in TEMP (keep project directory clean)
 $TempRoot  = Join-Path $env:TEMP ("zhimo_build_" + $Stamp)
@@ -88,29 +96,72 @@ if (Test-Path $FfmAbs) { $args += @("--add-data", "$FfmAbs;ffmpeg") }
 if (Test-Path $QssAbs) { $args += @("--add-data", "$QssAbs;ui") }
 
 # If you NEED audio resource dirs next to exe
-if (Test-Path $ZhHubo) { $args += @("--add-data", "$ZhHubo;zhubo_audio") }
+if (Test-Path $ZhHubo)  { $args += @("--add-data", "$ZhHubo;zhubo_audio") }
 if (Test-Path $ZhZhuli) { $args += @("--add-data", "$ZhZhuli;zhuli_audio") }
 
 & $VenvPython @args
 
 Pop-Location
 
-Write-Host "== 4) Copy to Desktop =="
+Write-Host "== 4) Copy folder release to Desktop =="
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 
 $BuiltDir = Join-Path $DistPath $AsciiName
 if (!(Test-Path $BuiltDir)) { throw "Cannot find output folder: $BuiltDir" }
 
-$FinalDir = Join-Path $OutDir "AI织梦直播助手"
+$FinalDir = Join-Path $OutDir $AppNameCN
 Copy-Item -Recurse -Force $BuiltDir $FinalDir
 
 # Rename exe to Chinese (optional)
 $ExeOld = Join-Path $FinalDir "AI_Assistant.exe"
-$ExeNew = Join-Path $FinalDir "AI织梦直播助手.exe"
+$ExeNew = Join-Path $FinalDir $ExeNameCN
 if (Test-Path $ExeOld) { Rename-Item -Force $ExeOld $ExeNew }
 
 Write-Host ""
-Write-Host "DONE. Desktop output:"
+Write-Host "DONE. Desktop folder output:"
 Write-Host $FinalDir
 Write-Host "TEMP build folder (safe to delete):"
 Write-Host $TempRoot
+Write-Host ""
+
+# =========================================================
+# == 5) Build Installer (Inno Setup) - one click ==========
+# =========================================================
+Write-Host "== 5) Build Installer (Inno Setup) =="
+
+# 你的 installer.iss 放在项目根目录
+$IssPath = Join-Path $ProjectRoot "installer.iss"
+if (!(Test-Path $IssPath)) {
+  throw "installer.iss not found: $IssPath (Put installer.iss in project root)"
+}
+
+# 找 ISCC.exe（Inno Setup 6）
+$IsccCandidates = @(
+  "C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
+  "C:\Program Files\Inno Setup 6\ISCC.exe"
+)
+
+$ISCC = $null
+foreach ($p in $IsccCandidates) {
+  if (Test-Path $p) { $ISCC = $p; break }
+}
+if (-not $ISCC) {
+  throw "ISCC.exe not found. Please install Inno Setup 6 (then ensure ISCC.exe exists)."
+}
+
+# 把“目录版输出路径”传给 installer.iss
+$env:ZHIMO_APP_SRC = $FinalDir
+$env:ZHIMO_APP_NAME = $AppNameCN
+$env:ZHIMO_APP_EXE  = $ExeNameCN
+$env:ZHIMO_APP_VER  = $AppVersion
+
+$InstallerOut = Join-Path $OutDir "Installer"
+New-Item -ItemType Directory -Force -Path $InstallerOut | Out-Null
+
+# 编译生成安装包
+& $ISCC "/O$InstallerOut" $IssPath
+
+Write-Host ""
+Write-Host "Installer output:"
+Write-Host $InstallerOut
+Write-Host "Done."

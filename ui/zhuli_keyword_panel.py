@@ -216,21 +216,6 @@ class ZhuliKeywordPanel(QWidget):
         self.btn_open_zhuli_dir.clicked.connect(self.open_zhuli_dir)
         dir_title_row.addWidget(self.btn_open_zhuli_dir)
 
-        self.btn_choose_zhuli_dir = QPushButton("选择目录")
-        self.btn_choose_zhuli_dir.setObjectName("SecondaryBtn")
-        self.btn_choose_zhuli_dir.setFixedHeight(34)
-        self.btn_choose_zhuli_dir.clicked.connect(self.choose_zhuli_dir)
-        dir_title_row.addWidget(self.btn_choose_zhuli_dir)
-
-        dir_layout.addLayout(dir_title_row)
-
-        dir_row = QHBoxLayout()
-        self.edt_zhuli_dir = QLineEdit()
-        self.edt_zhuli_dir.setReadOnly(True)
-        self.edt_zhuli_dir.setPlaceholderText("未设置，将使用默认 zhuli_audio 目录")
-        self.edt_zhuli_dir.setMinimumHeight(36)
-        self.edt_zhuli_dir.setObjectName("PathEdit")
-        dir_row.addWidget(self.edt_zhuli_dir, 1)
 
         self.btn_scan_dir = QPushButton("检查目录")
         self.btn_scan_dir.setObjectName("PrimaryBtn")
@@ -241,7 +226,23 @@ class ZhuliKeywordPanel(QWidget):
             "（你也可以把包含词改成更容易命中的关键词，比如“上车”“挂链接”“尺寸”）"
         )
         self.btn_scan_dir.clicked.connect(self.scan_zhuli_audio_dir)
-        dir_row.addWidget(self.btn_scan_dir)
+
+        dir_title_row.addWidget(self.btn_scan_dir)
+        dir_layout.addLayout(dir_title_row)
+
+        dir_row = QHBoxLayout()
+        self.edt_zhuli_dir = QLineEdit()
+        self.edt_zhuli_dir.setReadOnly(True)
+        self.edt_zhuli_dir.setPlaceholderText("未设置，将使用默认 zhuli_audio 目录")
+        self.edt_zhuli_dir.setMinimumHeight(36)
+        self.edt_zhuli_dir.setObjectName("PathEdit")
+        dir_row.addWidget(self.edt_zhuli_dir, 1)
+
+        self.btn_choose_zhuli_dir = QPushButton("选择目录")
+        self.btn_choose_zhuli_dir.setObjectName("PrimaryBtn")
+        self.btn_choose_zhuli_dir.setFixedHeight(34)
+        self.btn_choose_zhuli_dir.clicked.connect(self.choose_zhuli_dir)
+        dir_row.addWidget(self.btn_choose_zhuli_dir,0.5)
 
         dir_layout.addLayout(dir_row)
         root.addWidget(dir_card)
