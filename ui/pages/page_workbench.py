@@ -124,7 +124,7 @@ class WorkbenchPage(QWidget):
 
         # ===== test row + console =====
         self.test_input = QLineEdit()
-        self.test_input.setPlaceholderText("输入一条模拟弹幕，例如：这个多少钱")
+        self.test_input.setPlaceholderText("输入一条模拟弹幕，例如：测试")
         self.btn_test_danmaku = QPushButton("🧪 发送测试弹幕")
         self.btn_test_danmaku.setFixedWidth(140)
 
@@ -179,6 +179,14 @@ class WorkbenchPage(QWidget):
         lbl = QLabel(title_text)
         lbl.setAlignment(Qt.AlignCenter)
         lbl.setObjectName("CardTitle")
+
+        # ✅ 标题固定高度（两张卡：自动化控制 / 变量调节... 会立刻对齐）
+        TITLE_H = 34  # 你想更高就改这里：32/34/36 都行
+        lbl.setFixedHeight(TITLE_H)
+
+        # 可选：避免标题被挤压时换行导致高度异常
+        lbl.setWordWrap(False)
+
         v.addWidget(lbl)
 
         body = QVBoxLayout()
@@ -310,13 +318,16 @@ class WorkbenchPage(QWidget):
 
         from PySide6.QtWidgets import QCheckBox, QComboBox, QWidget, QVBoxLayout, QHBoxLayout
 
+        from PySide6.QtWidgets import QSpinBox
+
+
         def _delta_options(kind: str):
             kind = (kind or "").lower().strip()
             if kind == "pitch":
-                return ["-1~+1", "-2~+2", "-3~+3", "-4~+4", "-5~+5", "-6~+6", "-8~+8", "-10~+10", "-12~+12", "-50~+50（变态版）"]
+                return ["-1~+1", "-2~+2", "-3~+3", "-4~+4", "-5~+5", "-6~+6", "-8~+8", "-10~+10", "-12~+12"]
             if kind == "speed":
-                return ["-1~+1", "-2~+2", "-3~+3", "-4~+4", "-5~+5", "+0~+5", "+0~+10", "+0~+15", "+0~+20", "+80~+120（变态版）"]
-            return ["+0~+1", "+0~+2", "+0~+3", "+0~+4", "+0~+5", "+0~+6", "+0~+8", "+0~+10", "+0~+12", "+50~+60（变态版）"]
+                return ["-1~+1", "-2~+2", "-3~+3", "-4~+4", "-5~+5", "+0~+5", "+0~+10", "+0~+15", "+0~+20"]
+            return ["+0~+1", "+0~+2", "+0~+3", "+0~+4", "+0~+5", "+0~+6", "+0~+8", "+0~+10", "+0~+12"]
 
         def _normalize_delta(s: str) -> str:
             s = (s or "").strip()
@@ -324,7 +335,8 @@ class WorkbenchPage(QWidget):
                 s = s.split("（", 1)[0].strip()
             return s
 
-        def _make_var_block(title: str, enabled_attr: str, delta_attr: str, default_delta: str, kind: str):
+        def _make_var_block(title: str, enabled_attr: str, delta_attr: str, default_delta: str, kind: str,
+                            minsec_attr: str, default_minsec: int):
             wrap = QWidget()
             wrap.setObjectName("VarBlock")
             v = QVBoxLayout(wrap)
@@ -338,11 +350,8 @@ class WorkbenchPage(QWidget):
 
             cb = QCheckBox(title)
             cb.setChecked(bool(getattr(app_state, enabled_attr, True)))
-            tip = QLabel("每段音频随机一个目标值，并在本段内平滑过渡")
-            tip.setObjectName("MutedLabel")
 
             h1.addWidget(cb)
-            h1.addWidget(tip)
             h1.addStretch(1)
 
             row2 = QWidget()
@@ -364,6 +373,39 @@ class WorkbenchPage(QWidget):
             v.addWidget(row1)
             v.addWidget(row2)
 
+            # 短音频保护：少于 X 秒的音频，本项不生效（避免短音频突兀变化）
+            row3 = QWidget()
+            h3 = QHBoxLayout(row3)
+            h3.setContentsMargins(0, 0, 0, 0)
+            h3.setSpacing(10)
+
+            lab3a = QLabel("少于")
+            lab3a.setObjectName("MutedLabel")
+
+            sp_min = QSpinBox()
+            sp_min.setObjectName("VarSpin")
+            sp_min.setRange(0, 120)
+            sp_min.setSuffix(" 秒")
+            sp_min.setFixedHeight(30)
+            sp_min.setValue(int(getattr(app_state, minsec_attr, default_minsec) or default_minsec))
+
+            lab3b = QLabel("则不应用本项变化")
+            lab3b.setObjectName("MutedLabel")
+
+            h3.addWidget(lab3a)
+            h3.addWidget(sp_min)
+            h3.addWidget(lab3b)
+            h3.addStretch(1)
+
+            v.addWidget(row3)
+
+            def _save_min_sec(vv: int):
+                setattr(app_state, minsec_attr, int(vv))
+                self.ctx["save_runtime_flag"](minsec_attr, int(vv))
+
+            sp_min.valueChanged.connect(_save_min_sec)
+
+
             def _save_enabled(on: bool):
                 setattr(app_state, enabled_attr, bool(on))
                 self.ctx["save_runtime_flag"](enabled_attr, bool(on))
@@ -378,9 +420,12 @@ class WorkbenchPage(QWidget):
 
             return wrap
 
-        var_body.addWidget(_make_var_block("变调节", "var_pitch_enabled", "var_pitch_delta", "-5~+5", "pitch"))
-        var_body.addWidget(_make_var_block("变音量", "var_volume_enabled", "var_volume_delta", "+0~+10", "volume"))
-        var_body.addWidget(_make_var_block("变语速", "var_speed_enabled", "var_speed_delta", "+0~+10", "speed"))
+        var_body.addWidget(_make_var_block("变调节", "var_pitch_enabled", "var_pitch_delta", "-5~+5", "pitch",
+                                       "var_pitch_min_sec", 8))
+        var_body.addWidget(_make_var_block("变音量", "var_volume_enabled", "var_volume_delta", "+0~+10", "volume",
+                                       "var_volume_min_sec", 3))
+        var_body.addWidget(_make_var_block("变语速", "var_speed_enabled", "var_speed_delta", "+0~+10", "speed",
+                                       "var_speed_min_sec", 8))
 
         # 应用对象（主播/助播）
         targets = QWidget()

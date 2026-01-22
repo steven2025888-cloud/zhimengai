@@ -165,12 +165,18 @@ class AudioDispatcher:
 
         return pitch_t, speed_t, vol_t
 
-    def _build_const_filter(self, pitch_pct: int, speed_pct: int, vol_db: int) -> str | None:
+    def _build_const_filter(self, pitch_pct: int, speed_pct: int, vol_db: int,
+                          pitch_on: bool | None = None,
+                          speed_on: bool | None = None,
+                          vol_on: bool | None = None) -> str | None:
         """构造“常量”滤镜（用于某一小段音频）。"""
         st = self.state
-        pitch_on = bool(getattr(st, "var_pitch_enabled", False))
-        speed_on = bool(getattr(st, "var_speed_enabled", False))
-        vol_on = bool(getattr(st, "var_volume_enabled", False))
+        _p = bool(getattr(st, "var_pitch_enabled", False))
+        _s = bool(getattr(st, "var_speed_enabled", False))
+        _v = bool(getattr(st, "var_volume_enabled", False))
+        pitch_on = _p if pitch_on is None else bool(pitch_on)
+        speed_on = _s if speed_on is None else bool(speed_on)
+        vol_on = _v if vol_on is None else bool(vol_on)
 
         if not (pitch_on or speed_on or vol_on):
             return None
@@ -204,6 +210,141 @@ class AudioDispatcher:
         speed_on = bool(getattr(st, "var_speed_enabled", False))
         vol_on = bool(getattr(st, "var_volume_enabled", False))
         if not (pitch_on or speed_on or vol_on):
+            return src_path, None
+
+        # 先拿到时长，用于“短音频保护”
+        dur = self._get_duration_sec(src_path)
+        if dur <= 0.05:
+            # 拿不到时长/太短：为了避免突兀变化，直接回退原音频
+            return src_path, None
+
+        pitch_min = int(getattr(st, "var_pitch_min_sec", 8) or 0)
+        vol_min = int(getattr(st, "var_volume_min_sec", 3) or 0)
+        speed_min = int(getattr(st, "var_speed_min_sec", 8) or 0)
+
+        apply_pitch = pitch_on and (pitch_min <= 0 or dur >= pitch_min)
+        apply_vol = vol_on and (vol_min <= 0 or dur >= vol_min)
+        apply_speed = speed_on and (speed_min <= 0 or dur >= speed_min)
+
+        # 这段音频如果三项都被短音频保护挡住，则不做任何处理
+        if not (apply_pitch or apply_speed or apply_vol):
+            return src_path, None
+
+        # 本段音频：从“上一段目标值”过渡到“本段目标值”
+        pitch_start, speed_start, vol_start = self._cur_pitch_pct, self._cur_speed_pct, self._cur_volume_db
+        pitch_t, speed_t, vol_t = self._pick_next_targets()
+
+        # 对被“短音频保护”的项：本段不变化，并且不推进内部状态（避免下一段突兀跳变）
+        pitch_t_eff = pitch_t if apply_pitch else pitch_start
+        speed_t_eff = speed_t if apply_speed else speed_start
+        vol_t_eff = vol_t if apply_vol else vol_start
+
+        # 过渡在本段音频内“随机完成”
+        frac = random.uniform(0.0, 1.0)
+        ramp_end = dur * frac
+
+        steps = max(1, int(getattr(self, "_var_ramp_steps", 5)))
+        # ramp_end 太小就视为“开头直接跳到目标”
+        if ramp_end <= 0.05:
+            steps = 1
+
+        # 输出临时 wav（保证兼容播放）
+        tmp = tempfile.NamedTemporaryFile(prefix="var_", suffix=".wav", delete=False)
+        tmp_path = tmp.name
+        tmp.close()
+
+        # 组装 filter_complex：atrim 分段 + 每段常量滤镜 + concat
+        seg_filters = []
+        seg_labels = []
+        seg_idx = 0
+
+        def _interp(a: float, b: float, t: float) -> float:
+            return a + (b - a) * t
+
+        if steps <= 1:
+            cf = self._build_const_filter(
+                pitch_t_eff, speed_t_eff, vol_t_eff,
+                pitch_on=apply_pitch, speed_on=apply_speed, vol_on=apply_vol
+            )
+            if cf:
+                seg_filters.append(f"[0:a]{cf}[a0]")
+                seg_labels.append("[a0]")
+            else:
+                seg_filters.append("[0:a]anull[a0]")
+                seg_labels.append("[a0]")
+        else:
+            # ramp_end 以内分段渐变
+            for i in range(steps):
+                s = (ramp_end * i) / steps
+                e = (ramp_end * (i + 1)) / steps
+                # 用“段末插值”更像缓慢靠近
+                tt = (i + 1) / steps
+                p = int(round(_interp(pitch_start, pitch_t_eff, tt)))
+                sp = int(round(_interp(speed_start, speed_t_eff, tt)))
+                vb = int(round(_interp(vol_start, vol_t_eff, tt)))
+                cf = self._build_const_filter(
+                    p, sp, vb,
+                    pitch_on=apply_pitch, speed_on=apply_speed, vol_on=apply_vol
+                ) or "anull"
+                seg_filters.append(
+                    f"[0:a]atrim=start={s:.6f}:end={e:.6f},asetpts=PTS-STARTPTS,{cf}[a{seg_idx}]"
+                )
+                seg_labels.append(f"[a{seg_idx}]")
+                seg_idx += 1
+
+            # 2) 过渡完成后的剩余段：用目标值
+            if dur > ramp_end + 0.02:
+                cf = self._build_const_filter(
+                    pitch_t_eff, speed_t_eff, vol_t_eff,
+                    pitch_on=apply_pitch, speed_on=apply_speed, vol_on=apply_vol
+                ) or "anull"
+                seg_filters.append(
+                    f"[0:a]atrim=start={ramp_end:.6f},asetpts=PTS-STARTPTS,{cf}[a{seg_idx}]"
+                )
+                seg_labels.append(f"[a{seg_idx}]")
+                seg_idx += 1
+
+        concat_in = "".join(seg_labels)
+        concat_n = len(seg_labels)
+        filter_complex = ";".join(seg_filters + [f"{concat_in}concat=n={concat_n}:v=0:a=1[aout]"])
+
+        cmd = [
+            self._ffmpeg_bin(),
+            "-y",
+            "-i", src_path,
+            "-vn",
+            "-ac", "2",
+            "-ar", "44100",
+            "-filter_complex", filter_complex,
+            "-map", "[aout]",
+            tmp_path,
+        ]
+
+        try:
+            subprocess.run(cmd, check=True)
+
+            # 本段结束：只推进“本段实际应用”的项（被保护的项保持不动）
+            if apply_pitch:
+                self._cur_pitch_pct = int(pitch_t_eff)
+            if apply_speed:
+                self._cur_speed_pct = int(speed_t_eff)
+            if apply_vol:
+                self._cur_volume_db = int(vol_t_eff)
+
+            print(
+                "🎛️ 变量调节："
+                f"pitch {pitch_start}%→{pitch_t_eff}%({'ON' if apply_pitch else 'SKIP'}), "
+                f"speed {speed_start}%→{speed_t_eff}%({'ON' if apply_speed else 'SKIP'}), "
+                f"volume {vol_start}dB→{vol_t_eff}dB({'ON' if apply_vol else 'SKIP'}) "
+                f"| ramp={ramp_end:.2f}s/{dur:.2f}s | src={os.path.basename(src_path)}"
+            )
+            return tmp_path, tmp_path
+        except Exception as e:
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
+            print("⚠️ 变量调节处理失败，回退原音频：", e)
             return src_path, None
 
         # 本段音频：从“上一段目标值”过渡到“本段目标值”
