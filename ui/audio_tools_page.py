@@ -9,15 +9,14 @@ from PySide6.QtWidgets import (
 )
 
 
-from core.audio_tools import reorder_audio_files, smart_split_audio_to_dir, scan_audio_prefixes
-from core.keyword_io import load_keywords
+from core.audio_tools import reorder_audio_files, smart_split_audio_to_dir
 from config import AUDIO_BASE_DIR, SUPPORTED_AUDIO_EXTS
 
 from ui.dialogs import confirm_dialog, text_input_dialog, int_input_dialog, choice_dialog, ChoiceItem
 
 
 class AudioToolsPage(QWidget):
-    """音频工具独立页：排序 / 复制 / 检查 / 自动裁剪"""
+    """音频工具独立页：排序 / 复制 / 自动裁剪（检查功能已迁移到“关键词管理”）"""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -38,10 +37,9 @@ class AudioToolsPage(QWidget):
 
         self.btn_reorder = QPushButton("🧹 排序音频")
         self.btn_copy = QPushButton("📁 复制音频")
-        self.btn_check = QPushButton("🔍 检查音频")
         self.btn_split = QPushButton("✂️ 自动裁剪")
 
-        for b in (self.btn_reorder, self.btn_copy, self.btn_check, self.btn_split):
+        for b in (self.btn_reorder, self.btn_copy, self.btn_split):
             b.setMinimumSize(140, 38)
             b.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
 
@@ -53,7 +51,6 @@ class AudioToolsPage(QWidget):
 
         self.btn_reorder.clicked.connect(self.handle_reorder_audio)
         self.btn_copy.clicked.connect(self.handle_copy_audio)
-        self.btn_check.clicked.connect(self.handle_check_audio)
         self.btn_split.clicked.connect(self.handle_split_audio)
 
     # ===================== handlers =====================
@@ -161,30 +158,6 @@ class AudioToolsPage(QWidget):
         confirm_dialog(self, "复制完成", f"已生成 {created} 份\n跳过 {skipped} 份\n\n目录：\n{AUDIO_BASE_DIR}")
 
         print(f"📁 音频复制完成：{prefix}{start_index}~{end_index}，生成 {created} 个，跳过 {skipped} 个")
-
-    def handle_check_audio(self):
-        try:
-            keywords = load_keywords()
-            keyword_prefixes = set(keywords.keys())
-            audio_prefixes = scan_audio_prefixes(AUDIO_BASE_DIR, SUPPORTED_AUDIO_EXTS)
-
-            reserved_prefixes = {"讲解", "关注", "点赞", "下单"}
-            audio_prefixes = {p for p in audio_prefixes if p not in reserved_prefixes}
-
-            no_audio = sorted(keyword_prefixes - audio_prefixes)
-            no_keyword = sorted(audio_prefixes - keyword_prefixes)
-
-            msg = []
-            if no_audio:
-                msg.append("以下分类缺少对应音频：\n" + "、".join(no_audio))
-            if no_keyword:
-                msg.append("检测到新音频前缀（关键词未配置）：\n" + "、".join(no_keyword))
-            if not msg:
-                msg.append("关键词与音频前缀完全匹配，无需修复。")
-
-            confirm_dialog(self, "检查结果", "\n\n".join(msg))
-        except Exception as e:
-            confirm_dialog(self, "检查失败", str(e))
 
     def handle_split_audio(self):
         file_path, _ = QFileDialog.getOpenFileName(

@@ -91,9 +91,8 @@ class WorkbenchPage(QWidget):
         self.btn_clear_log = _mk_btn("🧹 清空日志")
 
         # 其他区域按钮（你原来就有）
-        self.btn_report_interval = QPushButton(f"⏱ 报时间隔：{voice_reporter.REPORT_INTERVAL_MINUTES} 分钟")
+        self.btn_report_interval = QPushButton(f"⏱ {voice_reporter.REPORT_INTERVAL_MINUTES} 分钟")
         self.btn_report_interval.setFixedHeight(32)
-        self.btn_report_interval.setMinimumWidth(220)
 
         self.sw_report = SwitchToggle(checked=app_state.enable_voice_report)
         self.sw_auto_reply = SwitchToggle(checked=app_state.enable_auto_reply)
@@ -172,6 +171,7 @@ class WorkbenchPage(QWidget):
     def _make_card(self, title_text: str):
         frame = QWidget()
         frame.setObjectName("Card")
+        frame.setMinimumWidth(300)
         v = QVBoxLayout(frame)
         v.setContentsMargins(10, 10, 10, 10)
         v.setSpacing(8)
@@ -303,6 +303,8 @@ class WorkbenchPage(QWidget):
 
     def _make_auto_card(self):
         auto_card, auto_body = self._make_card("自动化控制")
+
+
 
         auto_body.addWidget(self._switch_row("⏱ 随机报时", self.sw_report))
         auto_body.addWidget(self._button_row("⏱ 报时间隔", self.btn_report_interval))

@@ -12,13 +12,10 @@ class VoiceModelPage(QWidget):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(10)
 
-        title = QLabel("音色模型")
-        title.setStyleSheet("font-size:16px;font-weight:800;")
 
         desc = QLabel("在这里上传 / 删除 / 设置默认主播音色（支持 MP3 / WAV）")
         desc.setStyleSheet("color:#93A4B7;")
 
-        lay.addWidget(title)
         lay.addWidget(desc)
 
         panel = VoiceModelPanel(

@@ -83,7 +83,6 @@ class MainWindow(QWidget):
 
         self.setWindowTitle("织梦AI直播工具")
         self.setWindowIcon(QIcon(self.resource_path("logo.ico")))
-        self.resize(1480, 760)
 
         # ===== Layout: Left menu + Right stacked pages =====
         from PySide6.QtCore import Qt

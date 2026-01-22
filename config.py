@@ -61,15 +61,18 @@ ZHULI_AUDIO_DIR = BASE_DIR / "zhuli_audio"
 ZHULI_AUDIO_DIR.mkdir(parents=True, exist_ok=True)
 
 
+# ================== 关键词目录 ==================
+KEYWORDS_BASE_DIR = BASE_DIR / "keywords"
+KEYWORDS_BASE_DIR.mkdir(parents=True, exist_ok=True)
+
+
 SUPPORTED_AUDIO_EXTS = (".mp3", ".wav", ".aac", ".m4a", ".flac", ".ogg")
-
-PREFIX_RANDOM = "讲解"
-PREFIX_SIZE = "尺寸"
-KEYWORD_SIZE = "尺寸"
-
-RANDOM_PUSH_INTERVAL = 0.8
-MAIN_TICK_INTERVAL = 0.25
 
 
 # 说明文档（可改成你的真实文档地址）
 DOC_URL = "https://share.note.youdao.com/s/Ae6RJS7k"
+# 关键词规则说明（问号按钮跳转）
+KEYWORD_RULE_URL = "https://share.note.youdao.com/s/BYVl9xov"
+
+
+ZHULI_HELP_URL = "https://share.note.youdao.com/s/BYVl9xov"

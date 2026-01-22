@@ -140,7 +140,7 @@ class FolderOrderPanel(QWidget):
         if s.value(self.SETTINGS_KEY_TIP_SHOWN, False, type=bool):
             return
         s.setValue(self.SETTINGS_KEY_TIP_SHOWN, True)
-        QMessageBox.information(
+        confirm_dialog(
             self,
             "第一次使用提示",
             "这里可以调整“讲解文件夹”的轮播顺序：\n\n"
@@ -150,7 +150,7 @@ class FolderOrderPanel(QWidget):
         )
 
     def show_help(self):
-        QMessageBox.information(
+        confirm_dialog(
             self,
             "使用说明",
             "✅ 拖拽排序：\n"
@@ -168,7 +168,7 @@ class FolderOrderPanel(QWidget):
     def save_order(self):
         order = self.get_current_order()
         if not order:
-            QMessageBox.warning(self, "无法保存", "列表为空，无法保存顺序。请先放入文件夹后再试。")
+            confirm_dialog(self, "无法保存", "列表为空，无法保存顺序。请先放入文件夹后再试。")
             return
 
         self.manager.save(order)

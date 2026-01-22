@@ -2,12 +2,12 @@ import os
 import re
 from typing import Tuple, List
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QIcon
+from PySide6.QtCore import Qt, QUrl
+from PySide6.QtGui import QIcon, QDesktopServices
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QListWidget, QListWidgetItem, QTabWidget, QPushButton,
-    QFileDialog, QAbstractItemView, QTextBrowser, QDialog
+    QFileDialog, QAbstractItemView
 )
 
 from ui.dialogs import confirm_dialog, TextInputDialog, MultiLineInputDialog
@@ -16,7 +16,9 @@ from core.keyword_io import (
     export_keywords_json, load_keywords_json, merge_keywords
 )
 
-from PySide6.QtCore import QUrl
+from core.audio_tools import scan_audio_prefixes
+from config import KEYWORDS_BASE_DIR, SUPPORTED_AUDIO_EXTS, KEYWORD_RULE_URL
+
 
 def _split_words(raw: str) -> List[str]:
     """支持：换行 / 英文逗号 / 中文逗号 / 分号"""
@@ -56,14 +58,11 @@ class KeywordPanel(QWidget):
 
         self.new_added_prefixes = set()
 
-
         root = QVBoxLayout(self)
         root.setSpacing(10)
 
         # ===== 顶部栏 =====
         header = QHBoxLayout()
-
-
 
         title = QLabel("关键词管理")
         title.setStyleSheet("font-size: 16px; font-weight: 800;")
@@ -72,14 +71,22 @@ class KeywordPanel(QWidget):
 
         self.btn_export = QPushButton("导出")
         self.btn_import = QPushButton("导入（合并）")
+        self.btn_check_audio = QPushButton("检查音频")
+        self.btn_open_audio_dir = QPushButton("打开音频目录")
+
         self.btn_save = QPushButton("保存并热更新")
 
-        for b in (self.btn_export, self.btn_import, self.btn_save):
+
+
+        for b in (self.btn_export, self.btn_import, self.btn_check_audio, self.btn_save,self.btn_open_audio_dir ):
             b.setFixedHeight(36)
 
         header.addWidget(self.btn_export)
         header.addWidget(self.btn_import)
+        header.addWidget(self.btn_check_audio)
         header.addWidget(self.btn_save)
+        header.addWidget(self.btn_open_audio_dir)
+
         root.addLayout(header)
 
         # ===== 主体 =====
@@ -88,8 +95,6 @@ class KeywordPanel(QWidget):
         root.addLayout(body, 1)
 
         # ===== 左侧：分类列表 =====
-
-
 
         left = QVBoxLayout()
         body.addLayout(left, 2)
@@ -116,7 +121,7 @@ class KeywordPanel(QWidget):
         left.addLayout(left_ops)
 
         # ===== 右侧：词库 =====
-        right  = QVBoxLayout()
+        right = QVBoxLayout()
         body.addLayout(right, 5)
 
         # 当前分类行（标签 + 问号按钮）
@@ -145,8 +150,6 @@ class KeywordPanel(QWidget):
         }
         """)
 
-
-
         current_row.addWidget(self.btn_help)
         current_row.addStretch(1)  # 把右边顶开，保持左对齐
 
@@ -170,7 +173,6 @@ class KeywordPanel(QWidget):
         self.tabs.addTab(self.deny_list, "排除词（0）")
         self.tabs.addTab(self.reply_list, "回复词（0）")
 
-
         # 操作区
         ops = QHBoxLayout()
         self.btn_batch_add = QPushButton("批量添加")
@@ -179,9 +181,8 @@ class KeywordPanel(QWidget):
         self.btn_clear_prefix = QPushButton("清空本分类")
         self.btn_delete_all = QPushButton("删除全部关键词")
 
-
-
-        for b in (self.btn_batch_add, self.btn_del_selected, self.btn_clear_tab, self.btn_clear_prefix, self.btn_delete_all):
+        for b in (self.btn_batch_add, self.btn_del_selected, self.btn_clear_tab, self.btn_clear_prefix,
+                  self.btn_delete_all):
             b.setFixedHeight(34)
 
         ops.addWidget(self.btn_batch_add)
@@ -205,43 +206,66 @@ class KeywordPanel(QWidget):
 
         self.btn_export.clicked.connect(self.export_json)
         self.btn_import.clicked.connect(self.import_merge_json)
+        self.btn_check_audio.clicked.connect(self.handle_check_audio)
         self.btn_save.clicked.connect(self.save_and_hot_reload)
+        self.btn_open_audio_dir.clicked.connect(self.open_keywords_audio_dir)
 
         # 初始加载
         self.refresh_prefix_list()
 
+    def open_keywords_audio_dir(self):
+        try:
+            if not os.path.exists(KEYWORDS_BASE_DIR):
+                confirm_dialog(self, "目录不存在", f"未找到音频目录：\n{KEYWORDS_BASE_DIR}")
+                return
+            QDesktopServices.openUrl(QUrl.fromLocalFile(KEYWORDS_BASE_DIR))
+        except Exception as e:
+            confirm_dialog(self, "打开失败", str(e))
+
+
     # ===================== 规则说明（HTML） =====================
     def show_rule_help(self):
-        html_path = os.path.join(os.path.dirname(__file__), "rule_help.html")
-
-        dlg = QDialog(self)
-        dlg.setWindowTitle("关键词规则说明")
-        dlg.resize(760, 560)
-        layout = QVBoxLayout(dlg)
-
-        browser = QTextBrowser()
-        browser.setOpenExternalLinks(True)
-        browser.setStyleSheet("background:#0F1A2E; color:#E6EEF8; border-radius:10px; padding:8px;")
-
-        if os.path.exists(html_path):
-            with open(html_path, "r", encoding="utf-8") as f:
-                html = f.read()
-            base_dir = os.path.dirname(html_path)
-            browser.setHtml(html)
-            browser.document().setBaseUrl(QUrl.fromLocalFile(base_dir + os.sep))
-        else:
-            browser.setHtml("<h3 style='color:#FF6B6B'>未找到 ui/rule_help.html</h3>")
-
-        layout.addWidget(browser)
-
-        btn_close = QPushButton("关闭")
-        btn_close.setFixedHeight(36)
-        btn_close.clicked.connect(dlg.accept)
-        layout.addWidget(btn_close)
-
-        dlg.exec()
+        """问号按钮：跳转外部浏览器（URL 在 config.KEYWORD_RULE_URL 配置）"""
+        try:
+            url = (KEYWORD_RULE_URL or "").strip()
+            if not url:
+                confirm_dialog(self, "提示", "未配置 KEYWORD_RULE_URL")
+                return
+            QDesktopServices.openUrl(QUrl(url))
+        except Exception as e:
+            confirm_dialog(self, "打开失败", str(e))
 
     # ===================== 左侧分类 =====================
+
+    # ===================== 音频检查（搬到关键词管理里） =====================
+    def handle_check_audio(self):
+        """
+        对比：关键词分类前缀  vs  音频文件名前缀
+        规则：音频文件形如 “前缀001.mp3 / 前缀12.wav”
+        """
+        try:
+            keyword_prefixes = set(self.data.keys())
+            audio_prefixes = scan_audio_prefixes(KEYWORDS_BASE_DIR, SUPPORTED_AUDIO_EXTS)
+
+            # 这些前缀属于系统保留，不参与关键词一致性检查（按你项目约定）
+            reserved_prefixes = {"讲解", "关注", "点赞", "下单"}
+            audio_prefixes = {p for p in audio_prefixes if p not in reserved_prefixes}
+
+            no_audio = sorted(keyword_prefixes - audio_prefixes)
+            no_keyword = sorted(audio_prefixes - keyword_prefixes)
+
+            msg = []
+            if no_audio:
+                msg.append("以下分类缺少对应音频：\n" + "、".join(no_audio))
+            if no_keyword:
+                msg.append("检测到新音频前缀（关键词未配置）：\n" + "、".join(no_keyword))
+            if not msg:
+                msg.append("关键词与音频前缀完全匹配，无需修复。")
+
+            confirm_dialog(self, "检查结果", "\n\n".join(msg))
+        except Exception as e:
+            confirm_dialog(self, "检查失败", str(e))
+
     def refresh_prefix_list(self):
         """
         根据搜索条件刷新分类列表，并保持当前选中（如果还能找到）。
@@ -259,7 +283,6 @@ class KeywordPanel(QWidget):
         new = [p for p in all_prefixes if p in self.new_added_prefixes]
 
         prefixes = sorted(normal) + sorted(new)
-
 
         for p in prefixes:
             if keyword and keyword not in p:
@@ -432,7 +455,8 @@ class KeywordPanel(QWidget):
         if not words:
             return
 
-        cfg = self.data.get(self.current_prefix) or {"priority": 0, "must": [], "any": [], "deny": [], "prefix": self.current_prefix}
+        cfg = self.data.get(self.current_prefix) or {"priority": 0, "must": [], "any": [], "deny": [],
+                                                     "prefix": self.current_prefix}
         arr = list(map(str, cfg.get(key, []) or []))
         arr.extend(words)
         cfg[key] = _dedup_keep_order(arr)

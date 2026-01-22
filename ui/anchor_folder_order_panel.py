@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QListWidget, QPushButton,
     QToolButton, QFileDialog, QLineEdit
 )
-from PySide6.QtCore import Qt, QSize
+from PySide6.QtCore import Qt, QSize, QTimer, Signal
 from PySide6.QtGui import QFont, QIcon
 
 from audio.folder_order_manager import FolderOrderManager
@@ -55,6 +55,59 @@ def _save_runtime_state(state: dict):
         # 最差也别让 UI 崩
         pass
 
+class DraggableListWidget(QListWidget):
+    """支持更顺滑的拖动排序：可轻松拖到第一项位置。
+
+    关键点：
+    - 顶部吸附：当 drop 位置非常靠上时，强制插入到第 0 行
+    - 为避免 rowsRemoved/rowsInserted 的中间态被业务逻辑捕捉导致“项消失”，
+      手动移动时会临时 block model 信号，并在操作完成后发出 reorderFinished。
+    """
+
+    reorderFinished = Signal()
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.setDragEnabled(True)
+        self.setAcceptDrops(True)
+        self.setDropIndicatorShown(True)
+        self.setDragDropOverwriteMode(False)
+
+    def _emit_finished_later(self):
+        # 放到事件循环末尾，确保 UI/Model 都稳定了
+        QTimer.singleShot(0, self.reorderFinished.emit)
+
+    def dropEvent(self, event):
+        # Qt6: event.position() -> QPointF；Qt5: event.pos()
+        try:
+            pos = event.position().toPoint()
+        except Exception:
+            pos = event.pos()
+
+        # 顶部吸附：更容易拖到第一项之前
+        if pos.y() <= 10:
+            src_row = self.currentRow()
+            if src_row >= 0:
+                # 手动移动：block model 信号，避免外部在中间态读取到缺项
+                mdl = self.model()
+                bs_m = mdl.blockSignals(True)
+                bs_w = self.blockSignals(True)
+                try:
+                    item = self.takeItem(src_row)
+                    if item is not None:
+                        self.insertItem(0, item)
+                        self.setCurrentRow(0)
+                        event.setDropAction(Qt.MoveAction)
+                        event.accept()
+                        self._emit_finished_later()
+                        return
+                finally:
+                    self.blockSignals(bs_w)
+                    mdl.blockSignals(bs_m)
+
+        # 其他位置交给 Qt 默认 InternalMove 逻辑
+        super().dropEvent(event)
+        self._emit_finished_later()
 
 class AnchorFolderOrderPanel(QWidget):
     """
@@ -73,6 +126,7 @@ class AnchorFolderOrderPanel(QWidget):
         self._apply_anchor_dir_to_state(cur_dir, persist=False)
 
         self._last_saved_order: list[str] = []
+        self._order_change_scheduled = False
         self._dirty = False
 
         # ✅ 创建 manager（兼容旧实现）
@@ -163,7 +217,7 @@ class AnchorFolderOrderPanel(QWidget):
         center = QHBoxLayout()
         root.addLayout(center, 1)
 
-        self.list = QListWidget()
+        self.list = DraggableListWidget()
         self.list.setDragDropMode(QListWidget.InternalMove)
         self.list.setDefaultDropAction(Qt.MoveAction)
         self.list.setSelectionMode(QListWidget.SingleSelection)
@@ -250,6 +304,8 @@ class AnchorFolderOrderPanel(QWidget):
         model.rowsMoved.connect(self._on_order_changed)
         model.rowsInserted.connect(self._on_order_changed)
         model.rowsRemoved.connect(self._on_order_changed)
+        # 顶部吸附/手动移动会通过此信号通知完成，保证不丢项
+        self.list.reorderFinished.connect(self._on_order_changed)
 
         self.reload_folders(set_saved_snapshot=True)
 
@@ -416,8 +472,32 @@ class AnchorFolderOrderPanel(QWidget):
         self.btn_save.setEnabled(self._dirty)
         self._refresh_status()
 
+    def _apply_order_runtime(self, order: list[str]):
+        """让新排序立即影响播放（不必重启）。不持久化到磁盘。"""
+        try:
+            # 保持播放端拿到的是同一个 manager 对象：直接改其内部状态
+            if hasattr(self.manager, "folders"):
+                self.manager.folders = order  # type: ignore
+            if hasattr(self.manager, "index"):
+                self.manager.index = 0  # type: ignore
+            # 统一入口：播放端应读取 app_state.folder_manager
+            app_state.folder_manager = self.manager
+        except Exception:
+            pass
+
     def _on_order_changed(self, *args, **kwargs):
+        # 拖动时 model 会触发多次（rowsRemoved/rowsInserted/rowsMoved），
+        # 这里做一次 0ms 去抖：等事件循环结束再读取最终顺序，避免“拖到第一个后消失”。
+        if self._order_change_scheduled:
+            return
+        self._order_change_scheduled = True
+        QTimer.singleShot(0, self._apply_order_change)
+
+    def _apply_order_change(self):
+        self._order_change_scheduled = False
         cur = self.get_current_order()
+        # ✅ 实时应用到 manager（即刻生效），但仍需点“保存”来持久化
+        self._apply_order_runtime(cur)
         self._set_dirty(cur != self._last_saved_order)
 
     def move_up(self):
@@ -470,6 +550,9 @@ class AnchorFolderOrderPanel(QWidget):
             return
 
         self.manager.save(order)
+        # ✅ 保存后也立即应用一次（防止播放端仍读旧缓存）
+        self._apply_order_runtime(order)
+
         self._last_saved_order = order[:]
         self._set_dirty(False)
-        confirm_dialog(self, "保存成功", "文件夹顺序已保存，下次播放将按此顺序轮播。")
+        confirm_dialog(self, "保存成功", "文件夹顺序已保存，并已立即生效。")

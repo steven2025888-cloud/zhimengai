@@ -653,21 +653,116 @@ class AudioDispatcher:
             self.zhuli_q.clear()
             self.random_q.clear()
 
+    # ===================== 助播：根据“主播正在播放的音频文件名”触发（文件夹随机音频） =====================
+
+    def _zhuli_dir_and_exts(self):
+        """返回 (zhuli_audio_dir, supported_exts)。"""
+        from pathlib import Path
+        try:
+            from config import ZHULI_AUDIO_DIR, SUPPORTED_AUDIO_EXTS
+            default_dir = Path(ZHULI_AUDIO_DIR)
+            exts = tuple(SUPPORTED_AUDIO_EXTS)
+        except Exception:
+            default_dir = Path.cwd() / "zhuli_audio"
+            exts = (".mp3", ".wav", ".aac", ".m4a", ".flac", ".ogg")
+
+        d = getattr(self.state, "zhuli_audio_dir", "") or str(default_dir)
+        base = Path(d).expanduser().resolve()
+        try:
+            base.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+        return base, tuple(str(e).lower() for e in exts)
+
+    def _pick_zhuli_audio_from_category_folder(self, category: str) -> str | None:
+        """从「助播目录/<category>/」中随机挑一条音频（递归包含子目录）。"""
+        category = str(category or "").strip()
+        if not category:
+            return None
+
+        base, exts = self._zhuli_dir_and_exts()
+        folder = (base / category).expanduser().resolve()
+        if not folder.exists() or not folder.is_dir():
+            return None
+
+        cands: list[str] = []
+        try:
+            # 递归：允许 category 下再分子目录
+            for p in folder.rglob("*"):
+                if p.is_file() and p.suffix.lower() in exts:
+                    cands.append(str(p))
+        except Exception:
+            return None
+
+        if not cands:
+            return None
+        return random.choice(cands)
+
+    def _match_zhuli_category_by_anchor_stem(self, anchor_stem: str) -> str | None:
+        """从 zhuli_keywords 中查找：如果某条规则的 must 列表里【精准命中】anchor_stem，则返回该规则 prefix(=分类/文件夹名)。"""
+        anchor_stem = str(anchor_stem or "").strip()
+        if not anchor_stem:
+            return None
+
+        try:
+            from core.zhuli_keyword_io import load_zhuli_keywords
+            data = load_zhuli_keywords() or {}
+        except Exception:
+            data = {}
+
+        if not isinstance(data, dict) or not data:
+            return None
+
+        def _norm(x: str) -> str:
+            x = str(x or "").strip()
+            # 允许用户填入 xxx.mp3 / xxx.wav
+            x = os.path.splitext(x)[0]
+            return x
+
+        target = _norm(anchor_stem)
+
+        # 不再有“意图词/排除词/优先模式”，这里只看 must 的精准匹配
+        for k in list(data.keys()):
+            cfg = data.get(k)
+            if not isinstance(cfg, dict):
+                continue
+            category = str(cfg.get("prefix") or k or "").strip()
+            if not category:
+                continue
+            must = cfg.get("must", []) or []
+            for w in must:
+                if _norm(w) == target:
+                    return category
+
+        return None
+
+    def _enqueue_zhuli_for_anchor_finished(self, anchor_path: str):
+        """主播音频播放完毕后：如果命中助播规则，则从对应分类文件夹随机挑一条助播音频插队播放。"""
+        if not bool(getattr(self.state, "enable_zhuli", True)):
+            return
+        if not anchor_path:
+            return
+
+        stem = os.path.splitext(os.path.basename(anchor_path))[0].strip()
+        if not stem:
+            return
+
+        category = self._match_zhuli_category_by_anchor_stem(stem)
+        if not category:
+            return
+
+        wav = self._pick_zhuli_audio_from_category_folder(category)
+        if not wav:
+            return
+
+        with self._lock:
+            print(f"🎤 助播触发：主播音频「{stem}」命中 -> 分类「{category}」随机：{os.path.basename(wav)}")
+            self.zhuli_q.appendleft(AudioCommand(name=PLAY_ZHULI, path=wav))
+
     # ===================== 播放调度主循环 =====================
 
     def _pick_next_high(self) -> Optional[AudioCommand]:
-        """根据模式A/B 决定主播关键词与助播关键词的先后。"""
-        mode = str(getattr(self.state, "zhuli_mode", "A") or "A").upper()
-
-        if mode == "B":
-            # 模式B：报时 > 助播关键词 > 主播关键词 > 轮播
-            if self.zhuli_q:
-                return self.zhuli_q.popleft()
-            if self.anchor_q:
-                return self.anchor_q.popleft()
-            return None
-
-        # 默认模式A：报时 > 主播关键词 > 助播关键词 > 轮播
+        """固定优先级：报时 > 主播关键词 > 助播（助播通常由主播音频结束后自动插队）。"""
         if self.anchor_q:
             return self.anchor_q.popleft()
         if self.zhuli_q:
@@ -675,7 +770,7 @@ class AudioDispatcher:
         return None
 
     def process_once(self):
-
+        """主线程/定时器循环调用：从队列取一条音频并播放。"""
         if not self.state.enabled or not self.state.live_ready:
             return
         if self.current_playing:
@@ -688,7 +783,7 @@ class AudioDispatcher:
             if self.report_q:
                 cmd = self.report_q.popleft()
             else:
-                # 2) 主播/助播按模式优先
+                # 2) 主播关键词 > 助播
                 cmd = self._pick_next_high()
 
             # 3) 高优先级都空了：如果有被打断的轮播，先恢复它
@@ -710,33 +805,43 @@ class AudioDispatcher:
             tmp_to_cleanup = None
             play_path = cmd.path
 
-            # ✅ 只对 主播/助播关键词 生效（并按“主播/助播”勾选决定是否应用）
+            # ✅ 变量调节：对 主播/助播/轮播 生效（按开关决定）
             if cmd.name in (PLAY_ANCHOR, PLAY_ZHULI, PLAY_RANDOM):
-                # 轮播是否也应用：先直接复用主播/助播开关，或者你加一个新开关 var_apply_random
                 if cmd.name == PLAY_RANDOM:
-                    should_apply = True  # 先强制轮播也处理
+                    should_apply = True  # 轮播也处理
                 else:
                     apply_anchor = bool(getattr(self.state, "var_apply_anchor", True))
                     apply_zhuli = bool(getattr(self.state, "var_apply_zhuli", True))
-                    should_apply = (cmd.name == PLAY_ANCHOR and apply_anchor) or (
-                                cmd.name == PLAY_ZHULI and apply_zhuli)
+                    should_apply = (cmd.name == PLAY_ANCHOR and apply_anchor) or (cmd.name == PLAY_ZHULI and apply_zhuli)
 
                 if should_apply:
                     play_path, tmp_to_cleanup = self._prepare_processed_audio(cmd.path)
 
             if cmd.name == PLAY_REPORT:
+                self.stop_event.clear()
                 print("🕒 播放整点报时：", cmd.path)
                 play_audio_and_wait(cmd.path)
 
             elif cmd.name in (PLAY_ANCHOR, PLAY_ZHULI):
+                self.stop_event.clear()
                 tag = "主播关键词" if cmd.name == PLAY_ANCHOR else "助播关键词"
                 print(f"🎯 播放{tag}插播：", play_path)
                 play_audio_and_wait(play_path)
+
+                # ✅ 新逻辑：主播音频文件名精准命中 must => 主播播完后插播助播（不再区分 A/B 优先模式）
+                if cmd.name == PLAY_ANCHOR and (not self.stop_event.is_set()):
+                    self._enqueue_zhuli_for_anchor_finished(cmd.path)
 
             elif cmd.name == PLAY_RANDOM:
                 print("🎲 播放轮播音频：", play_path)
                 self.stop_event.clear()
                 play_audio_interruptible(play_path, self.stop_event)
+
+
+                # ✅ 新逻辑：轮播音频播放完也允许按文件名触发助播
+                # （例如：轮播播放 spk_1768978871.wav，必含词=spk_1768978871 即可触发）
+                if not self.stop_event.is_set():
+                    self._enqueue_zhuli_for_anchor_finished(cmd.path)
 
             # ✅ 清理临时文件
             if tmp_to_cleanup:
@@ -764,3 +869,4 @@ class AudioDispatcher:
             sd.stop()
         except Exception:
             pass
+

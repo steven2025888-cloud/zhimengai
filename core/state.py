@@ -41,8 +41,6 @@ class AppState:
 
     # ===== 助播关键词（语音） =====
     enable_zhuli: bool = True
-    # 模式A：主播关键词优先；模式B：助播关键词优先
-    zhuli_mode: str = "A"  # "A" or "B"
 
     # ===== 运行时注入（FolderOrderPanel 会注入） =====
     folder_manager: Any = None

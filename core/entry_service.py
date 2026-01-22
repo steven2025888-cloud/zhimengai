@@ -8,9 +8,7 @@ from pathlib import Path
 from PySide6.QtWidgets import QApplication, QDialog
 from ui.license_login_dialog import LicenseLoginDialog
 
-from config import (
-    PREFIX_RANDOM, PREFIX_SIZE,
-    RANDOM_PUSH_INTERVAL, MAIN_TICK_INTERVAL, WS_URL
+from config import ( WS_URL
 )
 from core.state import AppState, app_state
 from core.ws_client import WSClient
@@ -316,15 +314,8 @@ def run_engine(license_key: str):
                 except Exception as e:
                     print("anchor keyword error:", e)
 
-            if getattr(app_state, "enable_zhuli", False):
-                try:
-                    zhuli_prefix = hit_zhuli_question(content)
-                    if zhuli_prefix:
-                        zhuli_wav = pick_zhuli_audio_by_prefix(zhuli_prefix)
-                        if zhuli_wav:
-                            dispatcher.push_zhuli_keyword(zhuli_wav)
-                except Exception as e:
-                    print("zhuli keyword error:", e)
+            # ✅ 助播逻辑已重构：不再按弹幕文本匹配助播关键词。
+            # 改为：当“主播关键词音频”播完后，AudioDispatcher 会根据【当前主播音频文件名】精准命中 -> 自动插播助播音频。
 
             return reply_text
 
