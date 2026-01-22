@@ -786,6 +786,15 @@ class WorkbenchPage(QWidget):
             h1.setSpacing(10)
 
             cb = QCheckBox(title)
+            # 默认：变调节首次默认关闭，其它默认开启。
+            # 说明：如果你之前已经保存过 var_pitch_enabled=True，这里会做一次“迁移”把它改为 False（符合你的产品默认）。
+            if enabled_attr == 'var_pitch_enabled' and not bool(getattr(app_state, '_migrated_pitch_default', False)):
+                try:
+                    setattr(app_state, enabled_attr, False)
+                    self.ctx['save_runtime_flag'](enabled_attr, False)
+                    setattr(app_state, '_migrated_pitch_default', True)
+                except Exception:
+                    pass
             cb.setChecked(bool(getattr(app_state, enabled_attr, True)))
 
             h1.addWidget(cb)

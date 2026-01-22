@@ -1,0 +1,10 @@
+{
+  "enable_voice_report": false,
+  "report_interval_minutes": 15,
+  "enable_danmaku_reply": true,
+  "enable_auto_reply": true,
+  "license_key": "ZM-2026-01-15-TEST-0003",
+  "expire_time": "2026-02-14 23:59:59",
+  "var_pitch_enabled": false,
+  "var_pitch_min_sec": 8
+}
