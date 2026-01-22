@@ -171,10 +171,12 @@ class MainWindow(QWidget):
     def _build_page_specs(self) -> List[PageSpec]:
         # 延迟 import：避免互相引用/启动慢
         from ui.pages.page_workbench import WorkbenchPage
+        from ui.pages.page_guide import GuidePage
         from ui.pages.page_anchor import AnchorPage
         from ui.pages.page_keywords import KeywordPage
         from ui.pages.page_zhuli import ZhuliPage
         from ui.pages.page_voice_model import VoiceModelPage
+        from ui.pages.page_ai_reply import AiReplyPage
         from ui.pages.page_placeholder import PlaceholderPage
         from ui.audio_tools_page import AudioToolsPage
 
@@ -191,12 +193,13 @@ class MainWindow(QWidget):
 
         return [
             PageSpec("AI工作台", lambda: WorkbenchPage(ctx())),
+            PageSpec("新手引导", lambda: GuidePage(ctx())),
             PageSpec("主播设置", lambda: AnchorPage(ctx())),
             PageSpec("关键词设置", lambda: KeywordPage(ctx())),
             PageSpec("助播设置", lambda: ZhuliPage(ctx())),
             PageSpec("音色模型", lambda: VoiceModelPage(ctx())),
             PageSpec("音频工具", lambda: AudioToolsPage(self)),  # 你原本就独立
-            PageSpec("DPS设置", lambda: PlaceholderPage("DPS设置（开发中）")),
+            PageSpec("AI回复", lambda: AiReplyPage(ctx())),
             PageSpec("回复弹窗", lambda: PlaceholderPage("回复弹窗（开发中）")),
             PageSpec("话术改写", lambda: PlaceholderPage("话术改写（开发中）")),
             PageSpec("自动切换", lambda: PlaceholderPage("自动切换（开发中）")),

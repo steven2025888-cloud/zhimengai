@@ -62,7 +62,7 @@ ZHULI_AUDIO_DIR.mkdir(parents=True, exist_ok=True)
 
 
 # ================== 关键词目录 ==================
-KEYWORDS_BASE_DIR = BASE_DIR / "keywords"
+KEYWORDS_BASE_DIR = BASE_DIR / "keywords_audio"
 KEYWORDS_BASE_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -76,3 +76,16 @@ KEYWORD_RULE_URL = "https://share.note.youdao.com/s/BYVl9xov"
 
 
 ZHULI_HELP_URL = "https://share.note.youdao.com/s/BYVl9xov"
+
+# AI Key 注册/购买页面
+AI_KEY_REGISTER_URL = "https://ai.zhimengai.xyz/console/token"
+
+# AI回复说明文档
+AI_REPLY_HELP_URL = "https://你的AI回复说明文档"
+
+
+AI_REPLY_MODELS = [
+    {"label": "DeepSeek", "id": "deepseek-chat",   "icon": r"img\Deepseek.svg"},
+    {"label": "豆包",     "id": "deepseek-chat", "icon": r"img\doubao.png"},
+    {"label": "GPT5.2",         "id": "gpt-4.1-mini","icon": r"img\openai.svg"},
+]

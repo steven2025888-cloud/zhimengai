@@ -7,7 +7,7 @@ import functools
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QTextEdit, QPushButton,
-    QSplitter, QDialog, QSpinBox, QLineEdit, QGridLayout, QApplication
+    QSplitter, QDialog, QSpinBox, QLineEdit, QGridLayout, QApplication, QFileDialog, QMessageBox
 )
 from ui.dialogs import confirm_dialog
 
@@ -18,7 +18,6 @@ from core.state import app_state
 from api.voice_api import get_machine_code
 from config import BASE_URL
 from ui.switch_toggle import SwitchToggle
-from PySide6.QtCore import QProcess
 import os
 import webbrowser
 
@@ -84,11 +83,21 @@ class WorkbenchPage(QWidget):
 
         self.btn_start = _mk_btn("🚀 启动系统", primary=True)
         self.btn_restart = _mk_btn("🔄 重新运行")
-        self.btn_check_update = _mk_btn("⬆️ 检查更新")
+        # ✅ 已移除“检查更新”按钮（按你的需求）
+        self.btn_pause_play = _mk_btn("⏸ 暂停播放")
 
         self.btn_doc = _mk_btn("📖 说明文档")
         self.btn_open_folder = _mk_btn("📂 打开目录")
         self.btn_clear_log = _mk_btn("🧹 清空日志")
+
+        # ===== 插播/急插 =====
+        self.btn_insert_audio = _mk_btn("📌 插播音频")
+        self.btn_urgent_audio = _mk_btn("🚨 急插音频")
+        self.btn_record_urgent = _mk_btn("🎙️ 录音急插")
+
+        # 初始按钮样式
+        self._style_start_idle()
+        self._sync_pause_btn_ui(paused=False)
 
         # 其他区域按钮（你原来就有）
         self.btn_report_interval = QPushButton(f"⏱ {voice_reporter.REPORT_INTERVAL_MINUTES} 分钟")
@@ -137,6 +146,17 @@ class WorkbenchPage(QWidget):
         log_l.setContentsMargins(0, 0, 0, 0)
         log_l.addLayout(test_row)
 
+        # 插播控制
+        insert_row = QHBoxLayout()
+        insert_row.setSpacing(10)
+        insert_row.addWidget(QLabel("插播控制："))
+        insert_row.addWidget(self.btn_insert_audio)
+        insert_row.addWidget(self.btn_urgent_audio)
+        insert_row.addWidget(self.btn_record_urgent)
+        insert_row.addStretch(1)
+        log_l.addLayout(insert_row)
+
+
         self.console = QTextEdit()
         self.console.setReadOnly(True)
         log_l.addWidget(self.console, 1)
@@ -163,9 +183,13 @@ class WorkbenchPage(QWidget):
         self.btn_test_danmaku.clicked.connect(self.send_test_danmaku)
 
         self.btn_restart.clicked.connect(self.restart_app)
-        self.btn_check_update.clicked.connect(self.check_update)
+        self.btn_pause_play.clicked.connect(self.toggle_pause_play)
         self.btn_doc.clicked.connect(self.open_doc)
         self.btn_open_folder.clicked.connect(self.open_app_folder)
+
+        self.btn_insert_audio.clicked.connect(self.choose_insert_audio)
+        self.btn_urgent_audio.clicked.connect(self.choose_urgent_audio)
+        self.btn_record_urgent.clicked.connect(self.open_record_urgent_dialog)
 
     # ---------------- UI blocks ----------------
     def _make_card(self, title_text: str):
@@ -230,7 +254,7 @@ class WorkbenchPage(QWidget):
         grid.addWidget(self.btn_start, 0, 0)
         grid.addWidget(self.btn_restart, 0, 1)
 
-        grid.addWidget(self.btn_check_update, 1, 0)
+        grid.addWidget(self.btn_pause_play, 1, 0)
         grid.addWidget(self.btn_doc, 1, 1)
 
         grid.addWidget(self.btn_open_folder, 2, 0)
@@ -271,19 +295,88 @@ class WorkbenchPage(QWidget):
         QApplication.quit()
         sys.exit(0)
 
-    def check_update(self):
-        # 你已经有“强制检查更新并在需要时退出”的逻辑，直接复用
-        # 对应这个文件里的函数：force_check_update_and_exit_if_needed :contentReference[oaicite:2]{index=2}
-        try:
-            from core.updater import force_check_update_and_exit_if_needed
-        except Exception:
-            # 如果你文件名不是 update_checker.py，就把这里改成你的真实模块名
-            confirm_dialog(self, "未找到更新模块",
-                           "没找到更新检查模块：请确认 core/updater.py 是否存在并包含 force_check_update_and_exit_if_needed。")
 
+    # ---------------- UI state styles ----------------
+    def _style_start_idle(self):
+        # 蓝色启动按钮
+        self.btn_start.setStyleSheet("""
+            QPushButton{
+                background:#2D8CF0;color:#fff;border:none;border-radius:10px;
+                padding:6px 14px;font-weight:900;
+            }
+            QPushButton:disabled{
+                background:#2D8CF0;
+                color:#fff;
+                opacity:1;
+            }
+        """)
+
+    def _style_start_started(self):
+        # 启动后：绿色（更直观）
+        self.btn_start.setStyleSheet("""
+            QPushButton{
+                background:#00B894;color:#fff;border:none;border-radius:10px;
+                padding:6px 14px;font-weight:900;
+            }
+            QPushButton:disabled{
+                background:#00B894;
+                color:#fff;
+                opacity:1;
+            }
+        """)
+
+    def _style_pause_playing(self):
+        # 正常播放：中性按钮
+        self.btn_pause_play.setStyleSheet("""
+            QPushButton{
+                background:rgba(255,255,255,0.06);
+                border:1px solid rgba(255,255,255,0.10);
+                border-radius:10px;
+                padding:6px 14px;
+                font-weight:800;
+                color: rgba(255,255,255,0.92);
+            }
+            QPushButton:hover{background:rgba(255,255,255,0.10);}
+        """)
+
+    def _style_pause_paused(self):
+        # 暂停中：橙色强调（并提示“点击播放”）
+        self.btn_pause_play.setStyleSheet("""
+            QPushButton{
+                background:#F39C12;color:#fff;border:none;border-radius:10px;
+                padding:6px 14px;font-weight:900;
+            }
+            QPushButton:hover{ background:#F5A623; }
+        """)
+
+    def _sync_pause_btn_ui(self, paused: bool):
+        if paused:
+            self.btn_pause_play.setText("▶ 播放")
+            self._style_pause_paused()
+        else:
+            self.btn_pause_play.setText("⏸ 暂停播放")
+            self._style_pause_playing()
+
+    def toggle_pause_play(self):
+        disp = self._get_audio_dispatcher()
+        if not disp:
+            confirm_dialog(self, "提示", "请先点击【启动系统】后再使用暂停/播放。")
             return
 
-        force_check_update_and_exit_if_needed()
+        try:
+            if hasattr(disp, "toggle_paused"):
+                paused = bool(disp.toggle_paused())
+            elif hasattr(disp, "set_paused"):
+                paused = (not bool(getattr(disp, "paused", False)))
+                disp.set_paused(paused)
+            else:
+                confirm_dialog(self, "不支持", "当前版本的音频调度器不支持暂停/播放，请更新 audio_dispatcher.py。")
+                return
+
+            self._sync_pause_btn_ui(paused)
+            print("⏸ 已暂停播放" if paused else "▶ 已恢复播放")
+        except Exception as e:
+            QMessageBox.critical(self, "暂停/播放失败", str(e))
 
     def open_doc(self):
         try:
@@ -300,6 +393,348 @@ class WorkbenchPage(QWidget):
 
         webbrowser.open(url)
 
+    # ===================== 插播 / 急插 / 录音急插 =====================
+
+    def _get_audio_dispatcher(self):
+        """获取 AudioDispatcher 实例（兼容不同挂载方式）。"""
+        for attr in ("audio_dispatcher", "dispatcher", "audio"):
+            d = getattr(app_state, attr, None)
+            if d is not None:
+                return d
+        if isinstance(self.ctx, dict):
+            return self.ctx.get("audio_dispatcher")
+        return None
+
+    def choose_insert_audio(self):
+        disp = self._get_audio_dispatcher()
+        if not disp:
+            confirm_dialog(self, "提示", "请先点击【启动系统】后再使用插播功能。")
+            return
+
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "选择要插播的音频",
+            "",
+            "Audio Files (*.mp3 *.wav *.aac *.m4a *.flac *.ogg);;All Files (*)",
+        )
+        if not path:
+            return
+        try:
+            disp.push_insert(path)
+            print("📌 插播已加入队列：", path)
+        except Exception as e:
+            QMessageBox.critical(self, "插播失败", str(e))
+
+    def choose_urgent_audio(self):
+        disp = self._get_audio_dispatcher()
+        if not disp:
+            confirm_dialog(self, "提示", "请先点击【启动系统】后再使用急插功能。")
+            return
+
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "选择要急插的音频",
+            "",
+            "Audio Files (*.mp3 *.wav *.aac *.m4a *.flac *.ogg);;All Files (*)",
+        )
+        if not path:
+            return
+        try:
+            disp.push_urgent(path)
+            print("🚨 已急插：", path)
+        except Exception as e:
+            QMessageBox.critical(self, "急插失败", str(e))
+    def open_record_urgent_dialog(self):
+        disp = self._get_audio_dispatcher()
+        if not disp:
+            confirm_dialog(self, "提示", "请先点击【启动系统】后再使用录音急插。")
+            return
+
+        import time as _time
+        import math as _math
+        from PySide6.QtCore import QTimer, QSize, QEasingCurve, QPropertyAnimation
+        from PySide6.QtGui import QPainter, QPen, QColor, QFont
+
+        class BarWaveform(QWidget):
+            """
+            柱子型波形（抖音常见的“柱状音频条”风格）：
+            - 读取 dispatcher 最近波形（-1~1）
+            - 分桶取峰值 -> N 个柱子
+            - 居中对称绘制 + 轻微辉光
+            - AGC 自动增益（平滑），小声也看得见
+            """
+            def __init__(self, parent=None):
+                super().__init__(parent)
+                self._bars = [0.0] * 42  # 柱子数量（越大越密）
+                self._gain = 1.0
+                self._smooth_gain = 1.0
+                self._last_peak = 1e-6
+                self.setMinimumHeight(96)
+
+            def sizeHint(self):
+                return QSize(360, 110)
+
+            def set_wave(self, wave):
+                if not wave:
+                    return
+
+                w = list(wave)
+                n = max(18, min(64, len(self._bars)))
+
+                # 分桶：每个桶取 peak（更像“节奏条”）
+                L = len(w)
+                step = max(1, L // n)
+                bars = []
+                for i in range(n):
+                    s = i * step
+                    e = (i + 1) * step if i < n - 1 else L
+                    seg = w[s:e]
+                    if not seg:
+                        bars.append(0.0)
+                        continue
+                    # 用 abs 峰值
+                    pk = max(abs(float(v)) for v in seg)
+                    bars.append(pk)
+
+                peak = max(1e-6, max(bars))
+                self._last_peak = peak
+
+                # AGC：让峰值接近 0.85
+                target_peak = 0.85
+                desired_gain = target_peak / peak
+                desired_gain = max(0.6, min(10.0, desired_gain))
+                self._smooth_gain = self._smooth_gain * 0.85 + desired_gain * 0.15
+                self._gain = self._smooth_gain
+
+                # 应用增益 + 软限幅
+                out = []
+                for v in bars:
+                    vv = v * self._gain
+                    vv = _math.tanh(vv * 1.6)
+                    out.append(vv)
+
+                self._bars = out
+                self.update()
+
+            def paintEvent(self, e):
+                p = QPainter(self)
+                p.setRenderHint(QPainter.Antialiasing, True)
+
+                r = self.rect()
+
+                # 背景卡片
+                p.setPen(Qt.NoPen)
+                p.setBrush(QColor(255, 255, 255, 14))
+                p.drawRoundedRect(r.adjusted(0, 0, -1, -1), 14, 14)
+
+                cy = r.center().y()
+                left = r.left() + 14
+                right = r.right() - 14
+                top = r.top() + 12
+                bottom = r.bottom() - 12
+
+                width = max(1, right - left)
+                height = max(1, bottom - top)
+                amp = height * 0.42
+
+                # 中线
+                p.setPen(QPen(QColor(255, 255, 255, 35), 1))
+                p.drawLine(left, cy, right, cy)
+
+                bars = self._bars or []
+                n = len(bars)
+                if n <= 0:
+                    return
+
+                # 柱宽/间距：自动适配
+                gap = 3  # 柱间距（越大越稀疏）
+                bar_w = max(2, int((width - gap * (n - 1)) / n))
+                # 如果太挤，就增大 gap 并重新算
+                if bar_w < 3 and n > 24:
+                    gap = 4
+                    bar_w = max(2, int((width - gap * (n - 1)) / n))
+
+                # 实际总宽居中
+                total = bar_w * n + gap * (n - 1)
+                x = left + max(0, (width - total) // 2)
+
+                base_col = QColor(45, 140, 240, 220)
+                glow_col = QColor(45, 200, 255, 70)
+
+                for v in bars:
+                    h = max(2, int(amp * float(v)))
+                    y1 = int(cy - h)
+                    y2 = int(cy + h)
+
+                    # 辉光底
+                    p.setBrush(glow_col)
+                    p.setPen(Qt.NoPen)
+                    p.drawRoundedRect(x - 1, y1 - 1, bar_w + 2, (y2 - y1) + 2, 3, 3)
+
+                    # 主柱
+                    p.setBrush(base_col)
+                    p.drawRoundedRect(x, y1, bar_w, (y2 - y1), 3, 3)
+
+                    x += bar_w + gap
+
+                # 右下角提示（peak + gain）可保留也可删
+                p.setPen(QPen(QColor(255, 255, 255, 120), 1))
+                f = QFont()
+                f.setPointSize(9)
+                p.setFont(f)
+                p.drawText(r.adjusted(0, 0, -10, -8),
+                           Qt.AlignRight | Qt.AlignBottom,
+                           f"peak {self._last_peak:.2f}  x{self._gain:.1f}")
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("🎙️ 录音急插")
+        dlg.setObjectName("RecordUrgentDialog")
+        dlg.setFixedSize(460, 320)
+
+        dlg.setStyleSheet("""
+            QDialog#RecordUrgentDialog{
+                background: #141821;
+            }
+            QLabel{
+                color: rgba(255,255,255,0.92);
+            }
+            QLabel#Title{
+                font-size: 16px;
+                font-weight: 900;
+            }
+            QLabel#Sub{
+                font-size: 12px;
+                color: rgba(255,255,255,0.65);
+            }
+            QPushButton{
+                border-radius: 12px;
+                padding: 10px 14px;
+                font-weight: 800;
+                font-size: 13px;
+            }
+            QPushButton#StartBtn{
+                background: #2D8CF0;
+                color: #fff;
+                border: none;
+            }
+            QPushButton#StartBtn:hover{ background: #3A97FF; }
+            QPushButton#StopBtn{
+                background: rgba(231,76,60,0.92);
+                color: #fff;
+                border: none;
+            }
+            QPushButton#StopBtn:hover{ background: rgba(231,76,60,1); }
+            QPushButton:disabled{
+                opacity: 0.45;
+            }
+        """)
+
+        v = QVBoxLayout(dlg)
+        v.setContentsMargins(16, 16, 16, 16)
+        v.setSpacing(12)
+
+        title = QLabel("录音急插")
+        title.setObjectName("Title")
+        title.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+
+        sub = QLabel("开始录音后讲话；停止后将立即【急插】播放本次录音（柱状波形）")
+        sub.setObjectName("Sub")
+        sub.setWordWrap(True)
+
+        wave = BarWaveform()
+        wave.setToolTip("实时柱状波形预览（更稀疏、更像抖音柱条）")
+
+        info_row = QHBoxLayout()
+        info_row.setSpacing(10)
+        lab_state = QLabel("状态：未录音")
+        lab_state.setObjectName("Sub")
+        lab_time = QLabel("00:00")
+        lab_time.setObjectName("Sub")
+        info_row.addWidget(lab_state)
+        info_row.addStretch(1)
+        info_row.addWidget(QLabel("时长："))
+        info_row.addWidget(lab_time)
+
+        btn_start = QPushButton("开始录音")
+        btn_start.setObjectName("StartBtn")
+        btn_stop = QPushButton("停止并急插")
+        btn_stop.setObjectName("StopBtn")
+        btn_stop.setEnabled(False)
+
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(12)
+        btn_row.addWidget(btn_start, 1)
+        btn_row.addWidget(btn_stop, 1)
+
+        v.addWidget(title)
+        v.addWidget(sub)
+        v.addWidget(wave)
+        v.addLayout(info_row)
+        v.addStretch(1)
+        v.addLayout(btn_row)
+
+        start_ts = {"t": None}
+
+        timer = QTimer(dlg)
+        timer.setInterval(33)  # 30fps 足够顺滑，且更省
+
+        def _tick():
+            wf = None
+            try:
+                if hasattr(disp, "get_record_waveform"):
+                    wf = disp.get_record_waveform(2048)
+                elif hasattr(disp, "_rec_wave"):
+                    wf = list(getattr(disp, "_rec_wave") or [])
+            except Exception:
+                wf = None
+
+            if wf:
+                wave.set_wave(wf)
+
+            if start_ts["t"] is not None:
+                sec = max(0, int(_time.time() - start_ts["t"]))
+                mm = sec // 60
+                ss = sec % 60
+                lab_time.setText(f"{mm:02d}:{ss:02d}")
+
+        timer.timeout.connect(_tick)
+
+        # 淡入动画
+        anim = QPropertyAnimation(dlg, b"windowOpacity", dlg)
+        anim.setDuration(160)
+        anim.setStartValue(0.0)
+        anim.setEndValue(1.0)
+        anim.setEasingCurve(QEasingCurve.OutCubic)
+
+        def _start():
+            try:
+                p = disp.start_recording_urgent()
+                if not p:
+                    confirm_dialog(dlg, "录音失败", "无法启动录音：请检查麦克风/声卡权限。")
+                    return
+
+                start_ts["t"] = _time.time()
+                lab_state.setText("状态：录音中…")
+                btn_start.setEnabled(False)
+                btn_stop.setEnabled(True)
+                timer.start()
+            except Exception as e:
+                QMessageBox.critical(dlg, "录音失败", str(e))
+
+        def _stop():
+            try:
+                disp.stop_recording_urgent()
+                timer.stop()
+                dlg.accept()
+            except Exception as e:
+                QMessageBox.critical(dlg, "停止失败", str(e))
+
+        btn_start.clicked.connect(_start)
+        btn_stop.clicked.connect(_stop)
+
+        dlg.setWindowOpacity(0.0)
+        anim.start()
+        dlg.exec()
 
     def _make_auto_card(self):
         auto_card, auto_body = self._make_card("自动化控制")
@@ -623,6 +1058,13 @@ class WorkbenchPage(QWidget):
         self._main_started = True
         self.btn_start.setEnabled(False)
 
+
+        # ✅ 启动后：按钮变绿 + 文案改为“已启动”
+        try:
+            self.btn_start.setText("✅ 已启动")
+            self._style_start_started()
+        except Exception:
+            pass
         t = threading.Thread(target=main, args=(self.ctx["license_key"],), daemon=True)
         t.start()
         print("🚀 系统已启动（后台运行）")

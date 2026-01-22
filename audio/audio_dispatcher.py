@@ -3,25 +3,31 @@ import os
 import random
 import threading
 from dataclasses import dataclass
-from typing import Optional, Callable
+from typing import Optional, Callable, Tuple
 from collections import deque
 
 import sounddevice as sd
 
 from core.state import AppState
-from audio.audio_player import play_audio_interruptible, play_audio_and_wait
+from audio.audio_player import play_audio_interruptible, play_audio_and_wait, set_paused as _player_set_paused, stop_playback as _player_stop
 import time
 import tempfile
 import subprocess
 import shutil
-
-
+import pathlib
 
 PLAY_REPORT = "PLAY_REPORT"
 # 为了兼容你现有调用：主播关键词仍叫 PLAY_SIZE
 PLAY_ANCHOR = "PLAY_SIZE"
 PLAY_ZHULI = "PLAY_ZHULI"
 PLAY_RANDOM = "PLAY_RANDOM"
+
+# 插播：当前音频播完后播放（不打断当前）
+PLAY_INSERT = "PLAY_INSERT"
+# 急插：立即停止当前并播放（最高优先级，仅次于报时）
+PLAY_URGENT = "PLAY_URGENT"
+# 录音急插（与急插同队列，仅用于标记来源）
+PLAY_RECORD = "PLAY_RECORD"
 
 
 @dataclass
@@ -41,6 +47,10 @@ class AudioDispatcher:
         self.zhuli_q: deque[AudioCommand] = deque()
         self.random_q: deque[AudioCommand] = deque()
 
+        # 插播/急插队列
+        self.insert_q: deque[AudioCommand] = deque()
+        self.urgent_q: deque[AudioCommand] = deque()
+
         self.current_playing = False
         self.current_name: str | None = None
         self.current_path: str | None = None
@@ -48,6 +58,11 @@ class AudioDispatcher:
         # stop_event：用于可中断播放（轮播一定用；关键词/报时靠 sd.stop 也能停）
         self.stop_event = threading.Event()
 
+
+        # ===== 暂停播放（UI 控制）=====
+        self.paused: bool = False
+        # 暂停时如果正在播放，先记住这条，恢复时放回队列最前
+        self._pause_resume_cmd: Optional[Tuple[str, str]] = None
         # 被打断的轮播，等高优先级都播完再恢复
         self.resume_after_high: str | None = None
 
@@ -61,14 +76,24 @@ class AudioDispatcher:
         # 你最新需求：不再按“随机多少秒刷新一次”，而是【每段音频】都会随机一个目标值，
         # 并在该音频内把当前值平滑过渡到目标值；下一段音频再从上一次目标值继续过渡。
         # 因此这里仅保留“上一次的目标值(=下一段的起点)”。
-        self._cur_pitch_pct = 0      # percent, 例如 -5 ~ +5
-        self._cur_speed_pct = 0      # percent, 例如 +0 ~ +10
-        self._cur_volume_db = 0      # dB, 例如 +0 ~ +10
+        self._cur_pitch_pct = 0  # percent, 例如 -5 ~ +5
+        self._cur_speed_pct = 0  # percent, 例如 +0 ~ +10
+        self._cur_volume_db = 0  # dB, 例如 +0 ~ +10
 
         # 为避免极端慢机卡顿：每段音频的平滑过渡拆成多少段（越大越平滑但越慢）
         self._var_ramp_steps = 5
 
-
+        # ===== 录音急插（按住录/松开播 或 开始/停止播） =====
+        self._rec_lock = threading.RLock()
+        self._rec_stream = None
+        self._rec_sf = None
+        self._rec_path: str | None = None
+        self._rec_running = False
+        self._rec_samplerate = 44100
+        self._rec_channels = 1
+        self._rec_level = 0.0
+        self._rec_wave_max = 4096
+        self._rec_wave = deque()  # 最近一段波形（float, -1~1）
 
     def _parse_delta_range(self, s: str) -> tuple[int, int]:
         """
@@ -84,6 +109,7 @@ class AudioDispatcher:
             except Exception:
                 return 0, 0
         a, b = s.split("~", 1)
+
         def _to_int(x: str) -> int:
             x = x.strip()
             if x.startswith("+"):
@@ -92,6 +118,7 @@ class AudioDispatcher:
                 return int(float(x))
             except Exception:
                 return 0
+
         mn = _to_int(a)
         mx = _to_int(b)
         if mx < mn:
@@ -166,9 +193,9 @@ class AudioDispatcher:
         return pitch_t, speed_t, vol_t
 
     def _build_const_filter(self, pitch_pct: int, speed_pct: int, vol_db: int,
-                          pitch_on: bool | None = None,
-                          speed_on: bool | None = None,
-                          vol_on: bool | None = None) -> str | None:
+                            pitch_on: bool | None = None,
+                            speed_on: bool | None = None,
+                            vol_on: bool | None = None) -> str | None:
         """构造“常量”滤镜（用于某一小段音频）。"""
         st = self.state
         _p = bool(getattr(st, "var_pitch_enabled", False))
@@ -347,121 +374,12 @@ class AudioDispatcher:
             print("⚠️ 变量调节处理失败，回退原音频：", e)
             return src_path, None
 
-        # 本段音频：从“上一段目标值”过渡到“本段目标值”
-        pitch_start, speed_start, vol_start = self._cur_pitch_pct, self._cur_speed_pct, self._cur_volume_db
-        pitch_t, speed_t, vol_t = self._pick_next_targets()
-
-        # 过渡在本段音频内“随机完成”：
-        #  - 可以在开头就完成（0%）
-        #  - 也可以到结束才完成（100%）
-        dur = self._get_duration_sec(src_path)
-        if dur <= 0.05:
-            # 拿不到时长，退化为“直接用目标值”
-            pitch_start, speed_start, vol_start = pitch_t, speed_t, vol_t
-            ramp_end = 0.0
-        else:
-            # 0 ~ 1 的随机，允许非常“突兀”的测试；
-            # 正常使用你也可以改成 random.uniform(0.2, 1.0)
-            frac = random.uniform(0.0, 1.0)
-            ramp_end = dur * frac
-
-        steps = max(1, int(getattr(self, "_var_ramp_steps", 5)))
-        # ramp_end 太小就视为“开头直接跳到目标”
-        if ramp_end <= 0.05:
-            steps = 1
-
-        # 输出临时 wav（保证兼容播放）
-        tmp = tempfile.NamedTemporaryFile(prefix="var_", suffix=".wav", delete=False)
-        tmp_path = tmp.name
-        tmp.close()
-
-        # 组装 filter_complex：atrim 分段 + 每段常量滤镜 + concat
-        seg_filters = []
-        seg_labels = []
-        seg_idx = 0
-
-        def _interp(a: float, b: float, t: float) -> float:
-            return a + (b - a) * t
-
-        # 1) 过渡段（拆 steps 段）
-        if steps == 1:
-            # 直接目标值
-            cf = self._build_const_filter(pitch_t, speed_t, vol_t)
-            if cf:
-                seg_filters.append(f"[0:a]{cf}[a0]")
-                seg_labels.append("[a0]")
-            else:
-                seg_filters.append("[0:a]anull[a0]")
-                seg_labels.append("[a0]")
-        else:
-            # ramp_end 以内分段渐变
-            for i in range(steps):
-                s = (ramp_end * i) / steps
-                e = (ramp_end * (i + 1)) / steps
-                # 用“段末插值”更像缓慢靠近
-                tt = (i + 1) / steps
-                p = int(round(_interp(pitch_start, pitch_t, tt)))
-                sp = int(round(_interp(speed_start, speed_t, tt)))
-                vb = int(round(_interp(vol_start, vol_t, tt)))
-                cf = self._build_const_filter(p, sp, vb) or "anull"
-                seg_filters.append(
-                    f"[0:a]atrim=start={s:.6f}:end={e:.6f},asetpts=PTS-STARTPTS,{cf}[a{seg_idx}]"
-                )
-                seg_labels.append(f"[a{seg_idx}]")
-                seg_idx += 1
-
-            # 2) 过渡完成后的剩余段：用目标值
-            if dur > ramp_end + 0.02:
-                cf = self._build_const_filter(pitch_t, speed_t, vol_t) or "anull"
-                seg_filters.append(
-                    f"[0:a]atrim=start={ramp_end:.6f},asetpts=PTS-STARTPTS,{cf}[a{seg_idx}]"
-                )
-                seg_labels.append(f"[a{seg_idx}]")
-                seg_idx += 1
-
-        concat_in = "".join(seg_labels)
-        concat_n = len(seg_labels)
-        filter_complex = ";".join(seg_filters + [f"{concat_in}concat=n={concat_n}:v=0:a=1[aout]"])
-
-        cmd = [
-            self._ffmpeg_bin(),
-            "-y",
-            "-i", src_path,
-            "-vn",
-            "-ac", "2",
-            "-ar", "44100",
-            "-filter_complex", filter_complex,
-            "-map", "[aout]",
-            tmp_path,
-        ]
-
-        try:
-            subprocess.run(cmd, check=True)
-
-            # 本段结束：把“目标值”作为下一段的起点
-            self._cur_pitch_pct = int(pitch_t)
-            self._cur_speed_pct = int(speed_t)
-            self._cur_volume_db = int(vol_t)
-
-            # 调试：显示本段从多少到多少
-            print(
-                f"🎛️ 变量调节：pitch {pitch_start}%→{pitch_t}%, speed {speed_start}%→{speed_t}%, volume {vol_start}dB→{vol_t}dB | ramp={ramp_end:.2f}s/{dur:.2f}s | src={os.path.basename(src_path)}"
-            )
-            return tmp_path, tmp_path
-        except Exception as e:
-            try:
-                os.remove(tmp_path)
-            except Exception:
-                pass
-            print("⚠️ 变量调节处理失败，回退原音频：", e)
-            return src_path, None
-
-
     # ===================== 辅助状态 =====================
 
     def has_pending(self) -> bool:
         with self._lock:
-            return bool(self.report_q or self.anchor_q or self.zhuli_q or self.random_q)
+            return bool(
+                self.report_q or self.urgent_q or self.insert_q or self.anchor_q or self.zhuli_q or self.random_q)
 
     def is_idle(self) -> bool:
         return (not self.current_playing) and (not self.has_pending())
@@ -586,8 +504,6 @@ class AudioDispatcher:
             print("📌 主播关键词（空闲直接播）->", os.path.basename(path))
             self.anchor_q.append(AudioCommand(name=PLAY_ANCHOR, path=path))
 
-
-
     def push_zhuli_keyword(self, path: str):
         """助播关键词"""
         if not self.state.live_ready:
@@ -641,6 +557,201 @@ class AudioDispatcher:
             # 3) 报时置顶（永远最先播）
             self.report_q.appendleft(AudioCommand(name=PLAY_REPORT, path=report_path))
 
+    # ===================== 插播 / 急插 =====================
+
+    def push_insert(self, path: str):
+        """插播：不打断当前音频，等“当前音频播放完”后立即播放插播音频（优先于关键词/轮播）。"""
+        if not self.state.live_ready:
+            return
+        if not path:
+            return
+        with self._lock:
+            # 插播永远放队列最前，确保“下一条就是它”
+            self.insert_q.appendleft(AudioCommand(name=PLAY_INSERT, path=path))
+            print("📌 已加入插播队列（播完当前就播）->", os.path.basename(path))
+
+    def push_urgent(self, path: str, clear_random: bool = True):
+        """急插：立即停止当前播放（如果有）并尽快播放急插音频。"""
+        if not self.state.live_ready:
+            return
+        if not path:
+            return
+        with self._lock:
+            # 急插会打断当前，但不把被打断的音频放回队列（“停止所有播放当前音频”）
+            if self.current_playing:
+                print("🚨 急插：停止当前并准备播放 ->", os.path.basename(path))
+                # 轮播就别恢复了
+                self.resume_after_high = None
+                # 视情况清掉轮播队列，避免插完又抢跑
+                if clear_random:
+                    self.random_q.clear()
+                self.stop_now()
+            else:
+                print("🚨 急插：空闲直接播放 ->", os.path.basename(path))
+
+            self.urgent_q.appendleft(AudioCommand(name=PLAY_URGENT, path=path))
+
+    def start_recording_urgent(self) -> str | None:
+        """开始录音（录音结束后可 stop_recording_urgent 触发急插）。返回录音文件路径。"""
+        if not self.state.live_ready:
+            return None
+        with self._rec_lock:
+            if self._rec_running:
+                return self._rec_path
+
+            # 保存到 app 目录下 recordings/，便于复用
+            try:
+                from config import get_app_dir
+                base = pathlib.Path(get_app_dir())
+            except Exception:
+                base = pathlib.Path(os.getcwd())
+            rec_dir = (base / "recordings")
+            try:
+                rec_dir.mkdir(parents=True, exist_ok=True)
+            except Exception:
+                pass
+
+            ts = time.strftime("%Y%m%d_%H%M%S")
+            out_path = str(rec_dir / f"record_{ts}.wav")
+
+            try:
+                import soundfile as sf
+                self._rec_sf = sf.SoundFile(
+                    out_path,
+                    mode="w",
+                    samplerate=int(self._rec_samplerate),
+                    channels=int(self._rec_channels),
+                    subtype="PCM_16",
+                )
+            except Exception as e:
+                print("❌ 录音初始化失败：", e)
+                self._rec_sf = None
+                return None
+
+            def _cb(indata, frames, time_info, status):
+                if status:
+                    # 不要刷屏太多，只打印一次也行；这里保持简单
+                    pass
+                with self._rec_lock:
+                    if not self._rec_running or self._rec_sf is None:
+                        return
+                    # ===== 音量 & 波形缓存（给 UI 用）=====
+                    try:
+                        import numpy as _np
+                        arr = indata
+                        # 转 mono
+                        if hasattr(arr, 'ndim') and arr.ndim > 1:
+                            mono = _np.mean(arr, axis=1)
+                        else:
+                            mono = arr.reshape(-1)
+                        mono = _np.asarray(mono, dtype=_np.float32)
+                        # RMS 音量（0~1 大致）
+                        rms = float(_np.sqrt(_np.mean(mono * mono)) + 1e-9)
+                        # 归一化（人声 RMS 通常 0.02~0.2）
+                        lvl = max(0.0, min(1.0, rms * 6.0))
+                        self._rec_level = lvl
+                        # 波形缓存：限幅并追加（降采样，限长）
+                        mono = _np.clip(mono, -1.0, 1.0)
+                        if mono.size > 1024:
+                            step = int(mono.size / 1024) or 1
+                            mono = mono[::step]
+                        for v in mono.tolist():
+                            self._rec_wave.append(float(v))
+                        overflow = len(self._rec_wave) - int(self._rec_wave_max)
+                        if overflow > 0:
+                            for _ in range(overflow):
+                                self._rec_wave.popleft()
+                    except Exception:
+                        pass
+                    try:
+                        self._rec_sf.write(indata.copy())
+                    except Exception:
+                        pass
+
+            try:
+                self._rec_stream = sd.InputStream(
+                    samplerate=int(self._rec_samplerate),
+                    channels=int(self._rec_channels),
+                    callback=_cb,
+                )
+                self._rec_stream.start()
+            except Exception as e:
+                print("❌ 打开录音设备失败：", e)
+                try:
+                    if self._rec_sf:
+                        self._rec_sf.close()
+                except Exception:
+                    pass
+                self._rec_sf = None
+                self._rec_stream = None
+                return None
+
+            self._rec_path = out_path
+            self._rec_running = True
+            print("🎙️ 开始录音（录音急插）->", os.path.basename(out_path))
+            return out_path
+
+    def stop_recording_urgent(self) -> str | None:
+        """停止录音，并把录音作为【急插音频】立刻插播。返回录音文件路径。"""
+        with self._rec_lock:
+            if not self._rec_running:
+                return None
+            self._rec_running = False
+
+            try:
+                if self._rec_stream:
+                    self._rec_stream.stop()
+                    self._rec_stream.close()
+            except Exception:
+                pass
+            self._rec_stream = None
+
+            try:
+                if self._rec_sf:
+                    self._rec_sf.flush()
+                    self._rec_sf.close()
+            except Exception:
+                pass
+            self._rec_sf = None
+
+            out = self._rec_path
+            self._rec_path = None
+
+        if out:
+            # 录音完：直接极速急插
+            self.push_urgent(out, clear_random=True)
+            print("🎙️ 录音已结束，已急插播放 ->", os.path.basename(out))
+        return out
+
+
+    def get_record_level(self) -> float:
+        """返回最近一次录音输入音量（0~1）。"""
+        try:
+            with self._rec_lock:
+                return float(getattr(self, "_rec_level", 0.0) or 0.0)
+        except Exception:
+            return 0.0
+
+
+    def get_record_waveform(self, max_samples: int = 2048):
+        """返回最近一段录音波形（list[float], -1~1）。用于抖音风波形 UI。"""
+        try:
+            max_samples = int(max_samples or 0) or 2048
+        except Exception:
+            max_samples = 2048
+
+        try:
+            with self._rec_lock:
+                buf = list(self._rec_wave)
+        except Exception:
+            buf = []
+
+        if not buf:
+            return []
+        if len(buf) <= max_samples:
+            return buf
+        return buf[-max_samples:]
+
     # 兼容 voice_reporter 旧调用
     def push_report_resume(self, report_path: str):
         # 兼容 voice_reporter 旧调用
@@ -652,6 +763,8 @@ class AudioDispatcher:
             self.anchor_q.clear()
             self.zhuli_q.clear()
             self.random_q.clear()
+            self.insert_q.clear()
+            self.urgent_q.clear()
 
     # ===================== 助播：根据“主播正在播放的音频文件名”触发（文件夹随机音频） =====================
 
@@ -731,7 +844,13 @@ class AudioDispatcher:
                 continue
             must = cfg.get("must", []) or []
             for w in must:
-                if _norm(w) == target:
+                kw = _norm(w)
+                if not kw:
+                    continue
+
+                # ✅ 包含匹配：主播音频名包含关键词即可触发
+                # 例：target="测试语音2" kw="测试语音" -> 命中
+                if kw in target or target in kw:
                     return category
 
         return None
@@ -773,17 +892,25 @@ class AudioDispatcher:
         """主线程/定时器循环调用：从队列取一条音频并播放。"""
         if not self.state.enabled or not self.state.live_ready:
             return
+        if getattr(self, 'paused', False):
+            return
         if self.current_playing:
             return
 
         with self._lock:
             cmd: Optional[AudioCommand] = None
 
-            # 1) 报时最高
+            # 1) 报时最高（会打断一切）
             if self.report_q:
                 cmd = self.report_q.popleft()
+            # 2) 急插：仅次于报时（会打断一切）
+            elif self.urgent_q:
+                cmd = self.urgent_q.popleft()
+            # 3) 插播：播完当前就播（不打断当前，但优先于关键词/轮播）
+            elif self.insert_q:
+                cmd = self.insert_q.popleft()
             else:
-                # 2) 主播关键词 > 助播
+                # 4) 主播关键词 > 助播
                 cmd = self._pick_next_high()
 
             # 3) 高优先级都空了：如果有被打断的轮播，先恢复它
@@ -806,13 +933,18 @@ class AudioDispatcher:
             play_path = cmd.path
 
             # ✅ 变量调节：对 主播/助播/轮播 生效（按开关决定）
-            if cmd.name in (PLAY_ANCHOR, PLAY_ZHULI, PLAY_RANDOM):
+            if cmd.name in (PLAY_ANCHOR, PLAY_ZHULI, PLAY_RANDOM, PLAY_INSERT, PLAY_URGENT, PLAY_RECORD):
                 if cmd.name == PLAY_RANDOM:
                     should_apply = True  # 轮播也处理
                 else:
                     apply_anchor = bool(getattr(self.state, "var_apply_anchor", True))
                     apply_zhuli = bool(getattr(self.state, "var_apply_zhuli", True))
-                    should_apply = (cmd.name == PLAY_ANCHOR and apply_anchor) or (cmd.name == PLAY_ZHULI and apply_zhuli)
+                    # 插播/急插默认按“主播”处理（你也可以按需改成单独开关）
+                    if cmd.name in (PLAY_INSERT, PLAY_URGENT, PLAY_RECORD):
+                        should_apply = apply_anchor
+                    else:
+                        should_apply = (cmd.name == PLAY_ANCHOR and apply_anchor) or (
+                                    cmd.name == PLAY_ZHULI and apply_zhuli)
 
                 if should_apply:
                     play_path, tmp_to_cleanup = self._prepare_processed_audio(cmd.path)
@@ -821,6 +953,16 @@ class AudioDispatcher:
                 self.stop_event.clear()
                 print("🕒 播放整点报时：", cmd.path)
                 play_audio_and_wait(cmd.path)
+
+            elif cmd.name in (PLAY_URGENT, PLAY_RECORD):
+                self.stop_event.clear()
+                print("🚨 播放急插音频：", play_path)
+                play_audio_and_wait(play_path)
+
+            elif cmd.name == PLAY_INSERT:
+                self.stop_event.clear()
+                print("📌 播放插播音频：", play_path)
+                play_audio_and_wait(play_path)
 
             elif cmd.name in (PLAY_ANCHOR, PLAY_ZHULI):
                 self.stop_event.clear()
@@ -836,7 +978,6 @@ class AudioDispatcher:
                 print("🎲 播放轮播音频：", play_path)
                 self.stop_event.clear()
                 play_audio_interruptible(play_path, self.stop_event)
-
 
                 # ✅ 新逻辑：轮播音频播放完也允许按文件名触发助播
                 # （例如：轮播播放 spk_1768978871.wav，必含词=spk_1768978871 即可触发）
@@ -859,14 +1000,50 @@ class AudioDispatcher:
                 self.current_name = None
                 self.current_path = None
 
+
+
+    # ===================== 暂停 / 恢复 =====================
+
+    def set_paused(self, paused: bool):
+        """暂停/恢复播放（用于 UI 按钮）。
+
+        ✅ 新逻辑（符合你说的“从暂停处继续”）：
+        - 暂停：不再 stop/重播，不再回队列；直接把播放器置为 paused（当前位置冻结）
+        - 恢复：继续从暂停的位置播放
+
+        说明：暂停期间 process_once() 会直接 return，不会开启下一条。
+        """
+        paused = bool(paused)
+        with self._lock:
+            cur = bool(getattr(self, "paused", False))
+            if cur == paused:
+                return
+            self.paused = paused
+
+        try:
+            _player_set_paused(paused)
+        except Exception:
+            pass
+
+        print("⏸ 已暂停播放" if paused else "▶ 已恢复播放")
+
+    def toggle_paused(self) -> bool:
+        """切换暂停状态，返回切换后的 paused 值。"""
+        new_val = (not bool(getattr(self, "paused", False)))
+        self.set_paused(new_val)
+        return bool(getattr(self, "paused", False))
+
     # ===================== 强制中断 =====================
 
     def stop_now(self):
-        """只发停止信号 + sd.stop()，不要把 current_playing 置 False。"""
+        """强制中断当前播放（用于报时/急插）。"""
         print("⛔ 强制停止播放")
         self.stop_event.set()
+        try:
+            _player_stop()
+        except Exception:
+            pass
         try:
             sd.stop()
         except Exception:
             pass
-

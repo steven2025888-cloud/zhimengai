@@ -2,11 +2,11 @@
 import os
 import random
 from core.state import app_state
-from config import AUDIO_BASE_DIR, SUPPORTED_AUDIO_EXTS
+from config import KEYWORDS_BASE_DIR, SUPPORTED_AUDIO_EXTS
 
 
 def _get_anchor_dir() -> str:
-    d = getattr(app_state, "anchor_audio_dir", "") or str(AUDIO_BASE_DIR)
+    d = str(KEYWORDS_BASE_DIR)
     os.makedirs(d, exist_ok=True)
     return d
 

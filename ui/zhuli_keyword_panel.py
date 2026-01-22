@@ -133,8 +133,8 @@ class ZhuliKeywordPanel(QWidget):
     助播设置（深色主题适配、美化版）：
 
     - 左侧：分类（= 助播音频目录下的文件夹名）
-    - 右侧：必含词 must（= 主播音频文件名去扩展名，精准匹配）
-    - 当“播完某条音频”且音频文件名精准命中必含词 => 下一条随机播放该分类文件夹内的助播音频
+    - 右侧：包含词 must（= 主播音频文件名去扩展名，包含即可触发）
+    - 当“播完某条音频”且音频文件名包含任意包含词 => 下一条随机播放该分类文件夹内的助播音频
     """
 
     sig_realtime_changed = Signal(dict)
@@ -237,8 +237,8 @@ class ZhuliKeywordPanel(QWidget):
         self.btn_scan_dir.setFixedHeight(36)
         self.btn_scan_dir.setToolTip(
             "扫描「助播音频目录」下的所有分类文件夹（一级子目录）。\n"
-            "自动生成：分类=文件夹名，必含词默认填同名。\n"
-            "（你也可以手动把必含词改成更精准的音频名，比如“炉子尺寸多大”）"
+            "自动生成：分类=文件夹名，包含词默认填同名。\n"
+            "（你也可以把包含词改成更容易命中的关键词，比如“上车”“挂链接”“尺寸”）"
         )
         self.btn_scan_dir.clicked.connect(self.scan_zhuli_audio_dir)
         dir_row.addWidget(self.btn_scan_dir)
@@ -301,7 +301,7 @@ class ZhuliKeywordPanel(QWidget):
         left_ops.addWidget(self.btn_del_prefix)
         left.addLayout(left_ops)
 
-        # --- 右侧：必含词 ---
+        # --- 右侧：包含词 ---
         right_card = QFrame()
         right_card.setObjectName("Card")
         right = QVBoxLayout(right_card)
@@ -310,7 +310,7 @@ class ZhuliKeywordPanel(QWidget):
         body.addWidget(right_card, 5)
 
         right_head = QHBoxLayout()
-        right_title = QLabel("必含词（精准匹配音频文件名）")
+        right_title = QLabel("包含词（音频名包含即可触发）")
         right_title.setObjectName("CardTitle")
         right_head.addWidget(right_title)
         right_head.addStretch(1)
@@ -324,8 +324,9 @@ class ZhuliKeywordPanel(QWidget):
         right.addLayout(right_head)
 
         hint = QLabel(
-            "提示：必含词填“音频名（去掉 .mp3/.wav 等后缀）”。\n"
-            "示例：主播播放“上车挂链接.mp3” → 必含词写“上车挂链接”，播完后自动随机播放分类里的助播音频（例如：好的，已上车）。"
+            "提示：包含词填“音频名里会出现的关键词（去掉 .mp3/.wav 等后缀）”。\n"
+            "规则：只要主播音频名包含该词，就会触发本分类。\n"
+            "示例：主播播放“上车挂链接.mp3” → 包含词写“上车”或“挂链接”，播完后自动随机播放分类里的助播音频（例如：好的，已上车）。"
         )
         hint.setWordWrap(True)
         hint.setObjectName("HintBox")
@@ -481,12 +482,12 @@ class ZhuliKeywordPanel(QWidget):
             if confirm_dialog:
                 confirm_dialog(self, "未配置说明文档", msg)
             else:
-                QMessageBox.information(self, "未配置说明文档", msg)
+                confirm_dialog(self, "未配置说明文档", msg)
             return
         try:
             QDesktopServices.openUrl(QUrl(url))
         except Exception as e:
-            QMessageBox.warning(self, "打开失败", str(e))
+            confirm_dialog(self, "打开失败", str(e))
 
     # ===================== 目录：打开/选择 =====================
 
@@ -525,7 +526,7 @@ class ZhuliKeywordPanel(QWidget):
             if confirm_dialog:
                 confirm_dialog(self, "打开失败", str(e))
             else:
-                QMessageBox.warning(self, "打开失败", str(e))
+                confirm_dialog(self, "打开失败", str(e))
 
     def choose_zhuli_dir(self):
         try:
@@ -539,7 +540,7 @@ class ZhuliKeywordPanel(QWidget):
             if confirm_dialog:
                 confirm_dialog(self, "选择失败", str(e))
             else:
-                QMessageBox.warning(self, "选择失败", str(e))
+                confirm_dialog(self, "选择失败", str(e))
 
     # ===================== 自动保存（防抖） =====================
 
@@ -685,7 +686,7 @@ class ZhuliKeywordPanel(QWidget):
         if not self.current_prefix:
             return
 
-        msg = f"确定删除分类「{self.current_prefix}」及其全部必含词吗？"
+        msg = f"确定删除分类「{self.current_prefix}」及其全部包含词吗？"
         if confirm_dialog is not None:
             ok = bool(confirm_dialog(self, "确认删除", msg))
         else:
@@ -714,13 +715,13 @@ class ZhuliKeywordPanel(QWidget):
             return
 
         if MultiLineInputDialog is not None:
-            dlg = MultiLineInputDialog(self, "批量添加必含词", "支持：换行分隔 / 逗号分隔", default="")
+            dlg = MultiLineInputDialog(self, "批量添加包含词", "支持：换行分隔 / 逗号分隔", default="")
             dlg.exec()
             if not getattr(dlg, "ok", False):
                 return
             text = getattr(dlg, "text", "")
         else:
-            text, ok = QInputDialog.getMultiLineText(self, "批量添加必含词", "每行一个（或逗号分隔）：")
+            text, ok = QInputDialog.getMultiLineText(self, "批量添加包含词", "每行一个（或逗号分隔）：")
             if not ok:
                 return
             text = text or ""
@@ -746,7 +747,7 @@ class ZhuliKeywordPanel(QWidget):
         if not items:
             return
 
-        msg = f"确定删除选中的 {len(items)} 个必含词吗？"
+        msg = f"确定删除选中的 {len(items)} 个包含词吗？"
         if confirm_dialog is not None:
             ok = bool(confirm_dialog(self, "确认删除", msg))
         else:
@@ -786,12 +787,12 @@ class ZhuliKeywordPanel(QWidget):
             if confirm_dialog:
                 confirm_dialog(self, "导出成功", f"已导出：{path}")
             else:
-                QMessageBox.information(self, "导出成功", f"已导出：{path}")
+                confirm_dialog(self, "导出成功", f"已导出：{path}")
         except Exception as e:
             if confirm_dialog:
                 confirm_dialog(self, "导出失败", str(e))
             else:
-                QMessageBox.warning(self, "导出失败", str(e))
+                confirm_dialog(self, "导出失败", str(e))
 
     def import_merge_json(self):
         try:
@@ -803,7 +804,7 @@ class ZhuliKeywordPanel(QWidget):
                 if confirm_dialog:
                     confirm_dialog(self, "导入失败", "文件内容不是 JSON 对象")
                 else:
-                    QMessageBox.warning(self, "导入失败", "文件内容不是 JSON 对象")
+                    confirm_dialog(self, "导入失败", "文件内容不是 JSON 对象")
                 return
 
             merged = merge_zhuli_keywords(self.data, raw) if callable(merge_zhuli_keywords) else {**self.data, **raw}
@@ -814,17 +815,17 @@ class ZhuliKeywordPanel(QWidget):
             self.refresh_prefix_list()
             self.sig_realtime_changed.emit(self.data)
 
-            msg = "已合并导入（旧字段会自动丢弃，仅保留必含词）。"
+            msg = "已合并导入（旧字段会自动丢弃，仅保留包含词）。"
             if confirm_dialog:
                 confirm_dialog(self, "导入成功", msg)
             else:
-                QMessageBox.information(self, "导入成功", msg)
+                confirm_dialog(self, "导入成功", msg)
 
         except Exception as e:
             if confirm_dialog:
                 confirm_dialog(self, "导入失败", str(e))
             else:
-                QMessageBox.warning(self, "导入失败", str(e))
+                confirm_dialog(self, "导入失败", str(e))
 
     def save_all(self):
         try:
@@ -835,12 +836,12 @@ class ZhuliKeywordPanel(QWidget):
             if confirm_dialog:
                 confirm_dialog(self, "保存成功", "助播设置已保存")
             else:
-                QMessageBox.information(self, "保存成功", "助播设置已保存")
+                confirm_dialog(self, "保存成功", "助播设置已保存")
         except Exception as e:
             if confirm_dialog:
                 confirm_dialog(self, "保存失败", str(e))
             else:
-                QMessageBox.warning(self, "保存失败", str(e))
+                confirm_dialog(self, "保存失败", str(e))
 
     # ===================== 检查目录：扫描分类文件夹并自动生成设置 =====================
 
@@ -888,7 +889,7 @@ class ZhuliKeywordPanel(QWidget):
             if confirm_dialog:
                 confirm_dialog(self, "检查失败", str(e))
             else:
-                QMessageBox.warning(self, "检查失败", str(e))
+                confirm_dialog(self, "检查失败", str(e))
             return
 
         self._sanitize_all()
@@ -898,11 +899,11 @@ class ZhuliKeywordPanel(QWidget):
         msg = (
             f"扫描目录：{str(base)}\n"
             f"新增分类：{added}\n"
-            f"补全必含词：{updated}\n\n"
-            f"小提示：你可以把某个分类的必含词改成更精准的主播音频名（去扩展名）。\n"
-            f"例如：分类=上车回复，必含词=上车挂链接；当主播播放“上车挂链接.mp3”时，会随机触发该分类文件夹里的助播音频（例如：好的，已上车）。"
+            f"补全包含词：{updated}\n\n"
+            f"小提示：你可以把某个分类的包含词改成更容易命中的关键词（音频名里出现就行）。\n"
+            f"例如：分类=上车回复，包含词=上车 或 挂链接；当主播播放“上车挂链接.mp3”时，会随机触发该分类文件夹里的助播音频（例如：好的，已上车）。"
         )
         if confirm_dialog:
             confirm_dialog(self, "检查完成", msg)
         else:
-            QMessageBox.information(self, "检查完成", msg)
+            confirm_dialog(self, "检查完成", msg)

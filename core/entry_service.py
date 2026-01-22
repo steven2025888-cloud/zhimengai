@@ -203,97 +203,6 @@ def run_engine(license_key: str):
 
         return best_prefix, best_reply
 
-    def hit_zhuli_question(text: str):
-        data = get_runtime_zhuli_keywords()
-        if not isinstance(data, dict) or not data:
-            return None
-
-        best_prefix = None
-        best_score = -10 ** 9
-
-        for cfg in data.values():
-            if not isinstance(cfg, dict):
-                continue
-            prefix = str(cfg.get("prefix") or "").strip()
-            if not prefix:
-                continue
-
-            must = cfg.get("must", []) or []
-            any_ = cfg.get("any", []) or []
-            deny = cfg.get("deny", []) or []
-            pr = int(cfg.get("priority", 0) or 0)
-
-            if deny and any(d in text for d in deny):
-                continue
-
-            must_hit = [m for m in must if m in text]
-            any_hit = [a for a in any_ if a in text]
-
-            if must and not must_hit:
-                continue
-            if any_ and not any_hit:
-                continue
-
-            score = pr * 1000 + len(must_hit) * 50 + len(any_hit) * 10
-            if score > best_score:
-                best_score = score
-                best_prefix = prefix
-
-        if best_prefix:
-            return best_prefix
-
-        for cfg in data.values():
-            if not isinstance(cfg, dict):
-                continue
-            prefix = str(cfg.get("prefix") or "").strip()
-            if not prefix:
-                continue
-
-            must = cfg.get("must", []) or []
-            deny = cfg.get("deny", []) or []
-            pr = int(cfg.get("priority", 0) or 0)
-
-            if deny and any(d in text for d in deny):
-                continue
-
-            must_hit = [m for m in must if m in text]
-            if must and not must_hit:
-                continue
-
-            score = pr * 1000 + len(must_hit) * 50
-            if score > best_score:
-                best_score = score
-                best_prefix = prefix
-
-        return best_prefix
-
-    def pick_zhuli_audio_by_prefix(prefix: str):
-        from pathlib import Path
-        try:
-            from config import ZHULI_AUDIO_DIR, SUPPORTED_AUDIO_EXTS
-            base0 = Path(ZHULI_AUDIO_DIR)
-            exts = tuple(SUPPORTED_AUDIO_EXTS)
-        except Exception:
-            base0 = Path.cwd() / "zhuli_audio"
-            exts = (".mp3", ".wav", ".aac", ".m4a", ".flac", ".ogg")
-
-        d = getattr(app_state, "zhuli_audio_dir", "") or str(base0)
-        base = Path(d)
-
-        try:
-            base.mkdir(parents=True, exist_ok=True)
-        except Exception:
-            pass
-
-        if not base.exists():
-            return None
-
-        cands = []
-        for p in base.iterdir():
-            if p.is_file() and p.suffix.lower() in exts:
-                if p.stem.startswith(prefix):
-                    cands.append(str(p))
-        return cands[0] if cands else None
 
     def on_danmaku(nickname: str, content: str):
         if not app_state.live_ready:
@@ -313,9 +222,6 @@ def run_engine(license_key: str):
                         dispatcher.push_anchor_keyword(wav)
                 except Exception as e:
                     print("anchor keyword error:", e)
-
-            # ✅ 助播逻辑已重构：不再按弹幕文本匹配助播关键词。
-            # 改为：当“主播关键词音频”播完后，AudioDispatcher 会根据【当前主播音频文件名】精准命中 -> 自动插播助播音频。
 
             return reply_text
 
