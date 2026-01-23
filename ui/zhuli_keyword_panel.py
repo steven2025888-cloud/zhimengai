@@ -552,6 +552,11 @@ class ZhuliKeywordPanel(QWidget):
         try:
             self._sanitize_all()
             save_zhuli_keywords(self.data)
+
+            # ✅ 自动保存也补齐分类文件夹（不弹窗）
+            for p in (self.data or {}).keys():
+                self._ensure_prefix_folder(str(p))
+
         except Exception as e:
             print("❌ 助播关键词自动保存失败：", e)
 
@@ -777,6 +782,29 @@ class ZhuliKeywordPanel(QWidget):
         self.clear_current_list()
 
     # ===================== 导入 / 导出 / 保存 =====================
+    def _ensure_prefix_folder(self, prefix: str) -> bool:
+        """
+        确保：助播音频目录/分类名 文件夹存在。
+        返回：本次是否新建了文件夹
+        """
+        prefix = (prefix or "").strip()
+        if not prefix:
+            return False
+
+        base = Path(str(getattr(app_state, "zhuli_audio_dir", "") or "") or self.zhuli_audio_dir).expanduser().resolve()
+        try:
+            base.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            return False
+
+        folder = base / prefix
+        if folder.exists():
+            return False
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+            return True
+        except Exception:
+            return False
 
     def export_json(self):
         try:
@@ -832,17 +860,30 @@ class ZhuliKeywordPanel(QWidget):
         try:
             self._sanitize_all()
             save_zhuli_keywords(self.data)
+
+            # ✅ 保存时：若分类对应文件夹不存在，则自动创建
+            created = 0
+            for p in (self.data or {}).keys():
+                if self._ensure_prefix_folder(str(p)):
+                    created += 1
+
             self.new_added_prefixes.clear()
             self.refresh_prefix_list()
+
+            tip = "助播设置已保存"
+            if created:
+                tip += f"\n已自动创建 {created} 个分类文件夹（在助播音频目录下）"
+
             if confirm_dialog:
-                confirm_dialog(self, "保存成功", "助播设置已保存")
+                confirm_dialog(self, "保存成功", tip)
             else:
-                confirm_dialog(self, "保存成功", "助播设置已保存")
+                QMessageBox.information(self, "保存成功", tip)
+
         except Exception as e:
             if confirm_dialog:
                 confirm_dialog(self, "保存失败", str(e))
             else:
-                confirm_dialog(self, "保存失败", str(e))
+                QMessageBox.critical(self, "保存失败", str(e))
 
     # ===================== 检查目录：扫描分类文件夹并自动生成设置 =====================
 

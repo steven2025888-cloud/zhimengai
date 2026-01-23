@@ -123,7 +123,7 @@ class _DirRow(QWidget):
         p = self.value() or self.default_path
         p = _ensure_dir(p) or p
         if not p or not os.path.isdir(p):
-            QMessageBox.warning(self, "提示", "目录无效，请先选择一个有效目录。")
+            confirm_dialog(self, "提示", "目录无效，请先选择一个有效目录。")
             return
         os.startfile(p)
 

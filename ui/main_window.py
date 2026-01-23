@@ -10,12 +10,14 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QIcon
-
+from core.runtime_state import load_runtime_state
 from core.state import app_state
 from config import AUDIO_BASE_DIR, ZHULI_AUDIO_DIR, other_gz_audio, other_dz_audio
+from ui.pages.page_script_rewrite import ScriptRewritePage
+
+
 
 print = functools.partial(print, flush=True)
-
 
 def _safe_mkdir(p: str) -> str:
     p = str(p or "").strip()
@@ -29,61 +31,55 @@ def _safe_mkdir(p: str) -> str:
 
 
 def bootstrap_runtime_into_app_state():
-    """把 runtime_state.json 的状态灌进 app_state（原来你写在 MainWindow.__init__ 里）"""
-    from core.runtime_state import load_runtime_state
-
+    """把 runtime_state.json 的状态灌进 app_state（含关注/点赞目录，避免被 UI 默认值覆盖）"""
     runtime = load_runtime_state() or {}
 
-    # ===== 主播音频目录（用户可选，默认 AUDIO_BASE_DIR）=====
+    # 主播目录
     anchor_default = str(AUDIO_BASE_DIR)
     app_state.anchor_audio_dir = str(runtime.get("anchor_audio_dir", anchor_default) or anchor_default)
     app_state.anchor_audio_dir = _safe_mkdir(app_state.anchor_audio_dir) or anchor_default
 
-    # ===== 助播音频目录（用户可选，默认 ZHULI_AUDIO_DIR）=====
+    # 助播目录
     zhuli_default = str(ZHULI_AUDIO_DIR)
     app_state.zhuli_audio_dir = str(runtime.get("zhuli_audio_dir", zhuli_default) or zhuli_default)
     app_state.zhuli_audio_dir = _safe_mkdir(app_state.zhuli_audio_dir) or zhuli_default
 
-    # ===== 关注/点赞目录（用户可选，默认 other_gz_audio / other_dz_audio）=====
+    # ✅ 关注目录（runtime 优先，其次 config 默认）
     follow_default = str(other_gz_audio)
-    like_default = str(other_dz_audio)
-
     app_state.follow_audio_dir = str(runtime.get("follow_audio_dir", follow_default) or follow_default)
-    app_state.like_audio_dir = str(runtime.get("like_audio_dir", like_default) or like_default)
-
     app_state.follow_audio_dir = _safe_mkdir(app_state.follow_audio_dir) or follow_default
+
+    # ✅ 点赞目录（runtime 优先，其次 config 默认）
+    like_default = str(other_dz_audio)
+    app_state.like_audio_dir = str(runtime.get("like_audio_dir", like_default) or like_default)
     app_state.like_audio_dir = _safe_mkdir(app_state.like_audio_dir) or like_default
 
-    # ===== 其他开关/参数（你原来的逻辑保持）=====
+    # 其它开关
     app_state.enable_voice_report = bool(runtime.get("enable_voice_report", False))
     app_state.enable_danmaku_reply = bool(runtime.get("enable_danmaku_reply", False))
     app_state.enable_auto_reply = bool(runtime.get("enable_auto_reply", False))
     app_state.enable_zhuli = bool(runtime.get("enable_zhuli", True))
-    app_state.zhuli_mode = str(runtime.get("zhuli_mode", "A") or "A").upper()
-    if app_state.zhuli_mode not in ("A", "B"):
-        app_state.zhuli_mode = "A"
 
-    # 变量调节（默认都打开）
+    # 变量调节
     app_state.var_pitch_enabled = bool(runtime.get("var_pitch_enabled", True))
     app_state.var_volume_enabled = bool(runtime.get("var_volume_enabled", True))
     app_state.var_speed_enabled = bool(runtime.get("var_speed_enabled", True))
-
     app_state.var_pitch_delta = str(runtime.get("var_pitch_delta", "-5~+5"))
     app_state.var_volume_delta = str(runtime.get("var_volume_delta", "+0~+10"))
     app_state.var_speed_delta = str(runtime.get("var_speed_delta", "+0~+10"))
-
     app_state.var_apply_anchor = bool(runtime.get("var_apply_anchor", True))
     app_state.var_apply_zhuli = bool(runtime.get("var_apply_zhuli", True))
 
-    # ===== 关注/点赞 播放开关 + 冷却间隔 =====
-    app_state.enable_follow_audio = bool(runtime.get("enable_follow_audio", False))
-    app_state.enable_like_audio = bool(runtime.get("enable_like_audio", False))
-
-    try:
-        app_state.follow_like_cooldown_seconds = int(runtime.get("follow_like_cooldown_seconds", 300) or 300)
-    except Exception:
-        app_state.follow_like_cooldown_seconds = 300
-
+    # ✅ 关注/点赞开关 + 冷却（如果你 UI 已经做了）
+    if "enable_follow_audio" in runtime:
+        app_state.enable_follow_audio = bool(runtime.get("enable_follow_audio"))
+    if "enable_like_audio" in runtime:
+        app_state.enable_like_audio = bool(runtime.get("enable_like_audio"))
+    if "follow_like_cooldown_seconds" in runtime:
+        try:
+            app_state.follow_like_cooldown_seconds = int(runtime.get("follow_like_cooldown_seconds") or 0)
+        except Exception:
+            pass
 
 def save_runtime_flag(key: str, value):
     from core.runtime_state import load_runtime_state, save_runtime_state
@@ -228,10 +224,12 @@ class MainWindow(QWidget):
 
             # ✅ 合并后的页面
             PageSpec("音频目录工具", lambda: AudioDirToolsPage(ctx())),
-
             PageSpec("AI回复", lambda: AiReplyPage(ctx())),
+
+            PageSpec("话术改写", lambda: ScriptRewritePage(ctx())),
+
             PageSpec("回复弹窗", lambda: PlaceholderPage("回复弹窗（开发中）")),
-            PageSpec("话术改写", lambda: PlaceholderPage("话术改写（开发中）")),
+
             PageSpec("评论管理", lambda: PlaceholderPage("评论管理（开发中）")),
         ]
 

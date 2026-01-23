@@ -60,6 +60,24 @@ def run_engine(license_key: str):
     if rt_flags.get("zhuli_audio_dir"):
         state.zhuli_audio_dir = str(rt_flags.get("zhuli_audio_dir"))
 
+    # ✅ 关注/点赞目录也要在引擎启动时从 runtime_state.json 同步到 app_state
+    if rt_flags.get("follow_audio_dir"):
+        state.follow_audio_dir = str(rt_flags.get("follow_audio_dir"))
+    if rt_flags.get("like_audio_dir"):
+        state.like_audio_dir = str(rt_flags.get("like_audio_dir"))
+
+    # （建议）关注/点赞播放开关和冷却也一并同步
+    if "enable_follow_audio" in rt_flags:
+        state.enable_follow_audio = bool(rt_flags.get("enable_follow_audio"))
+    if "enable_like_audio" in rt_flags:
+        state.enable_like_audio = bool(rt_flags.get("enable_like_audio"))
+    if rt_flags.get("follow_like_cooldown_seconds") is not None:
+        try:
+            state.follow_like_cooldown_seconds = int(rt_flags.get("follow_like_cooldown_seconds"))
+        except Exception:
+            pass
+
+
     anchor_dir = getattr(state, "anchor_audio_dir", None) or str(AUDIO_BASE_DIR)
     state.folder_manager = FolderOrderManager(anchor_dir)
 

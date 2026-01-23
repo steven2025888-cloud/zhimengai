@@ -491,13 +491,13 @@ class AiReplyPage(QWidget):
         if confirm_dialog:
             confirm_dialog(self, title, msg)
         else:
-            QMessageBox.information(self, title, msg)
+            confirm_dialog(self, title, msg)
 
     def _warn(self, title: str, msg: str):
         if confirm_dialog:
             confirm_dialog(self, title, msg)
         else:
-            QMessageBox.warning(self, title, msg)
+            confirm_dialog(self, title, msg)
 
     # ===================== Actions =====================
 

@@ -830,53 +830,70 @@ class AudioDispatcher:
         """
         返回 (follow_dir, like_dir, exts)。
 
-        默认优先读取 config.py 里的：
-          - other_gz_audio  (关注目录)
-          - other_dz_audio  (点赞目录)
-        若不存在，再退化到应用目录下 other_audio/关注 / other_audio/点赞
+        优先级：
+          1) runtime_state.json（follow_audio_dir / like_audio_dir）
+          2) state 运行态（self.state.follow_audio_dir / self.state.like_audio_dir）
+          3) config 默认（other_gz_audio / other_dz_audio）
+          4) 兜底：<app_dir>/other_audio/关注 与 <app_dir>/other_audio/点赞
 
-        同时支持运行态覆写：
-          - state.follow_audio_dir
-          - state.like_audio_dir
+        同时确保目录存在。
         """
         from pathlib import Path
         import os
 
-        # 1) 支持的音频后缀
+        # ---------- exts ----------
         try:
             from config import SUPPORTED_AUDIO_EXTS
             exts = tuple(str(e).lower() for e in SUPPORTED_AUDIO_EXTS)
         except Exception:
             exts = (".mp3", ".wav", ".aac", ".m4a", ".flac", ".ogg")
 
-        # 2) 基础目录（兜底用）
+        # ---------- base dir fallback ----------
         try:
             from config import get_app_dir
             base = Path(get_app_dir())
         except Exception:
             base = Path(os.getcwd())
 
-        # 3) 默认目录：优先用 config 里定义的 Path
+        # ---------- config defaults ----------
         cfg_follow = None
         cfg_like = None
         try:
+            # 你 config 里定义的默认目录（Path）
             from config import other_gz_audio, other_dz_audio
-            cfg_follow = other_gz_audio
-            cfg_like = other_dz_audio
+            cfg_follow = Path(other_gz_audio)
+            cfg_like = Path(other_dz_audio)
         except Exception:
             cfg_follow = base / "other_audio" / "关注"
             cfg_like = base / "other_audio" / "点赞"
 
-        # 4) 允许 UI/运行态覆写目录（优先级最高）
-        follow_override = str(getattr(self.state, "follow_audio_dir", "") or "").strip()
-        like_override = str(getattr(self.state, "like_audio_dir", "") or "").strip()
+        # ---------- runtime_state (highest priority) ----------
+        rt_follow = ""
+        rt_like = ""
+        try:
+            from core.runtime_state import load_runtime_state
+            rt = load_runtime_state() or {}
+            rt_follow = str(rt.get("follow_audio_dir", "") or "").strip()
+            rt_like = str(rt.get("like_audio_dir", "") or "").strip()
+        except Exception:
+            pass
 
-        follow_dir = Path(follow_override).expanduser().resolve() if follow_override else Path(
-            cfg_follow).expanduser().resolve()
-        like_dir = Path(like_override).expanduser().resolve() if like_override else Path(
-            cfg_like).expanduser().resolve()
+        # ---------- state override (second priority) ----------
+        st_follow = str(getattr(self.state, "follow_audio_dir", "") or "").strip()
+        st_like = str(getattr(self.state, "like_audio_dir", "") or "").strip()
 
-        # 5) 确保目录存在
+        # ---------- choose final ----------
+        def _pick_dir(rt_val: str, st_val: str, cfg_val: Path) -> Path:
+            if rt_val:
+                return Path(rt_val).expanduser().resolve()
+            if st_val:
+                return Path(st_val).expanduser().resolve()
+            return Path(cfg_val).expanduser().resolve()
+
+        follow_dir = _pick_dir(rt_follow, st_follow, cfg_follow)
+        like_dir = _pick_dir(rt_like, st_like, cfg_like)
+
+        # ---------- ensure exists ----------
         try:
             follow_dir.mkdir(parents=True, exist_ok=True)
         except Exception:
@@ -885,7 +902,6 @@ class AudioDispatcher:
             like_dir.mkdir(parents=True, exist_ok=True)
         except Exception:
             pass
-
         return follow_dir, like_dir, exts
 
     def _pick_random_audio_in_dir(self, folder) -> str | None:
@@ -920,28 +936,74 @@ class AudioDispatcher:
     def push_follow_event(self, wav_path: str | None = None):
         if not self.state.live_ready:
             return
+
+        from pathlib import Path
+
+        def _is_under(p: Path, base: Path) -> bool:
+            try:
+                p.relative_to(base)
+                return True
+            except Exception:
+                return False
+
         with self._lock:
+            follow_dir, _, _ = self._other_audio_dirs()
+
+            # ✅ 如果外部传进来的 wav_path 不属于“当前关注目录”，就丢弃，改用新目录重选
+            if wav_path:
+                try:
+                    p = Path(str(wav_path)).expanduser()
+                    p = p.resolve() if p.is_absolute() else (Path.cwd() / p).resolve()
+                    base = Path(str(follow_dir)).expanduser().resolve()
+                    if (not p.exists()) or (base and (not _is_under(p, base))):
+                        # 这里可选：打个日志，方便你确认“确实有人传了旧路径进来”
+                        print(f"⚠️ 关注传入旧路径已丢弃 -> {p} (当前关注目录: {base})")
+                        wav_path = None
+
+                except Exception:
+                    wav_path = None
+
             if not wav_path:
-                follow_dir, _, _ = self._other_audio_dirs()
                 wav_path = self._pick_random_audio_in_dir(follow_dir)
+
             if not wav_path:
                 return
 
-            # ✅ 永远不打断：只排队
             print("⭐ 关注音频排队 ->", os.path.basename(wav_path))
             self.follow_q.append(AudioCommand(name=PLAY_FOLLOW, path=wav_path))
 
     def push_like_event(self, wav_path: str | None = None):
         if not self.state.live_ready:
             return
+
+        from pathlib import Path
+
+        def _is_under(p: Path, base: Path) -> bool:
+            try:
+                p.relative_to(base)
+                return True
+            except Exception:
+                return False
+
         with self._lock:
+            _, like_dir, _ = self._other_audio_dirs()
+
+            # ✅ 如果外部传进来的 wav_path 不属于“当前点赞目录”，就丢弃，改用新目录重选
+            if wav_path:
+                try:
+                    p = Path(str(wav_path)).expanduser()
+                    p = p.resolve() if p.is_absolute() else (Path.cwd() / p).resolve()
+                    base = Path(str(like_dir)).expanduser().resolve()
+                    if (not p.exists()) or (base and (not _is_under(p, base))):
+                        print(f"⚠️ 点赞传入旧路径已丢弃 -> {p} (当前点赞目录: {base})")
+                        wav_path = None
+                except Exception:
+                    wav_path = None
             if not wav_path:
-                _, like_dir, _ = self._other_audio_dirs()
                 wav_path = self._pick_random_audio_in_dir(like_dir)
             if not wav_path:
                 return
 
-            # ✅ 永远不打断：只排队
             print("👍 点赞音频排队 ->", os.path.basename(wav_path))
             self.like_q.append(AudioCommand(name=PLAY_LIKE, path=wav_path))
 
