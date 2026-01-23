@@ -621,31 +621,53 @@ class CommentManagerPage(QWidget):
                 pass
         except Exception:
             pass
-
-        # 如果你的关键词页是从 runtime_state.json 读取 qa_keywords，则也同步一下（只在存在该键时写回）
+        # 如果关键词页/引擎是从 runtime_state.json 读取 qa_keywords，则也同步一下（关键词配置，不是日志）
         try:
             from core.runtime_state import load_runtime_state, save_runtime_state
             rt = load_runtime_state() or {}
-            # 只覆盖已有键，避免你不希望 runtime_state 承载关键词时被强行写入
-            if isinstance(rt.get("qa_keywords"), dict) and var_name == "QA_KEYWORDS":
+            if var_name == "QA_KEYWORDS":
                 rt["qa_keywords"] = mapping
-                save_runtime_state(rt)
-            elif isinstance(rt.get("QA_KEYWORDS"), dict) and var_name == "QA_KEYWORDS":
                 rt["QA_KEYWORDS"] = mapping
                 save_runtime_state(rt)
         except Exception:
             pass
 
-    def _notify_keyword_page_refresh(self):
-        """通知“关键词设置”页面刷新（如果页面提供刷新方法）。"""
-        main = self.ctx.get("main")
-        if not main:
-            return
-        stack = getattr(main, "stack", None)
-        if not stack:
-            return
 
-        target = None
+def _notify_keyword_page_refresh(self):
+    """尽量让“关键词设置”页面立刻刷新到最新 reply（无须重启）。
+
+    优先：调用页面已有的 reload/refresh/load 方法；
+    兜底：直接重建“关键词设置”页面 widget（最稳）。
+    """
+    main = self.ctx.get("main")
+    if not main:
+        return
+
+    stack = getattr(main, "stack", None)
+    pages = getattr(main, "pages", None)
+    if not stack:
+        return
+
+    # 1) 先定位“关键词设置”页的 index（优先按 PageSpec.name）
+    idx = None
+    try:
+        if pages:
+            for i, p in enumerate(pages):
+                if getattr(p, "name", None) == "关键词设置":
+                    idx = i
+                    break
+    except Exception:
+        idx = None
+
+    target = None
+    if idx is not None:
+        try:
+            target = stack.widget(idx)
+        except Exception:
+            target = None
+
+    # 2) 兜底：按 class 名称/对象名查找
+    if target is None:
         try:
             for i in range(stack.count()):
                 w = stack.widget(i)
@@ -654,32 +676,86 @@ class CommentManagerPage(QWidget):
                 cn = w.__class__.__name__
                 if cn in ("KeywordPage", "KeywordsPage"):
                     target = w
+                    idx = i
                     break
-                # 兜底：根据标题/对象名判断
                 on = getattr(w, "objectName", None)
                 if callable(on) and (on() in ("KeywordPage", "page_keywords", "Keywords")):
                     target = w
+                    idx = i
                     break
         except Exception:
             target = None
 
-        if not target:
-            return
+    if target is None:
+        return
 
-        for name in (
-                "reload_keywords", "reload", "reload_all", "refresh", "refresh_ui",
-                "_reload_all", "_reload", "_load_from_runtime", "load_from_runtime",
-                "refresh_keywords", "_refresh", "_refresh_list",
-        ):
+    # 3) 尝试调用目标页面的刷新方法（无参）
+    try:
+        preferred = [
+            "reload_keywords", "reload", "reload_all", "refresh", "refresh_ui",
+            "_reload_all", "_reload", "_load_from_runtime", "load_from_runtime",
+            "refresh_keywords", "_refresh", "_refresh_list", "update_ui", "rebuild",
+        ]
+
+        tried = set()
+        for name in preferred:
             fn = getattr(target, name, None)
             if callable(fn):
+                tried.add(name)
                 try:
                     fn()
                     return
                 except Exception:
-                    continue
+                    pass
 
-        # 最终兜底：触发一次 repaint/update
+        # 再做一次“自动发现”：所有包含 load/refresh/reload 的无参方法都试一遍
+        import inspect as _inspect
+        for name in dir(target):
+            lname = name.lower()
+            if not any(k in lname for k in ("reload", "refresh", "load", "rebuild", "sync")):
+                continue
+            if name in tried:
+                continue
+            fn = getattr(target, name, None)
+            if not callable(fn):
+                continue
+            try:
+                sig = _inspect.signature(fn)
+                params = list(sig.parameters.values())
+                req = [p for p in params[1:] if
+                       p.default is p.empty and p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)]
+                if req:
+                    continue
+            except Exception:
+                pass
+            try:
+                fn()
+                return
+            except Exception:
+                continue
+    except Exception:
+        pass
+
+    # 4) 最终兜底：直接重建“关键词设置”页面（确保 UI 重新读取最新数据）
+    try:
+        if idx is None:
+            return
+        cur = stack.currentIndex()
+        old = stack.widget(idx)
+        if old:
+            stack.removeWidget(old)
+            old.setParent(None)
+            old.deleteLater()
+
+        from ui.pages.page_keywords import KeywordPage  # type: ignore
+        neww = KeywordPage(self.ctx)
+        stack.insertWidget(idx, neww)
+
+        try:
+            stack.setCurrentIndex(cur)
+        except Exception:
+            pass
+    except Exception:
         try:
             target.update()
         except Exception:
