@@ -36,7 +36,7 @@ BASE_DIR = get_app_dir()
 # ================== 登录缓存（永久保存） ==================
 STATE_FILE = BASE_DIR / "wx_login_state.json"
 DOUYIN_STATE_FILE = BASE_DIR / "douyin_login_state.json"
-
+WX_PROFILE_DIR = BASE_DIR / "wx_profile"
 
 # ================== 微信视频号 ==================
 LOGIN_URL = "https://channels.weixin.qq.com/login.html"

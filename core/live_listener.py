@@ -1,3 +1,4 @@
+# core/live_listener.py
 import os
 import json
 import base64
@@ -92,12 +93,7 @@ def _lower_headers(h: Dict[str, str]) -> Dict[str, str]:
 
 class LiveListener:
     """
-    视频号监听器（稳定版 + 抖音同款 storage_state 登录缓存）：
-    - 监听直播控制台
-    - 抓 live/msg 参数并推导 wx_post_url
-    - 抓管理员手动发送的 post_live_app_msg，保存 headers 模板（更稳）
-    - on_danmaku 做关键词/语音；这里负责发文字（enable_auto_reply 控制）
-    - 登录缓存：STATE_FILE（Path），第一次扫码，进入 LIVE_URL_PREFIX 后自动保存
+    视频号监听器（保持你原来抓弹幕逻辑不变 + 修复 is_listening 判断 + 增量公屏轮播）
     """
 
     def __init__(
@@ -120,6 +116,15 @@ class LiveListener:
         if not hasattr(self.state, "wx_seen_seq"):
             self.state.wx_seen_seq = set()
 
+        # core/live_listener.py  (在 __init__ 里补字段)
+        if not hasattr(self.state, "wx_public_post_url"):
+            self.state.wx_public_post_url = None
+        if not hasattr(self.state, "wx_public_headers_template"):
+            self.state.wx_public_headers_template = {}
+        if not hasattr(self.state, "wx_public_body_template"):
+            self.state.wx_public_body_template = None
+
+
         for k, v in {
             "wx_post_url": None,
             "wx_liveCookies": None,
@@ -136,7 +141,13 @@ class LiveListener:
         if not hasattr(self.state, "wx_post_headers_template"):
             self.state.wx_post_headers_template = {}
 
-    # ===== 登录缓存േഴ്：抖音同款 =====
+        # ✅ 公屏发送模板（必须手动发一条“公屏消息”让它捕获到模板）
+        if not hasattr(self.state, "wx_public_send_body_template"):
+            self.state.wx_public_send_body_template = None
+        if not hasattr(self.state, "wx_public_send_msg_template"):
+            self.state.wx_public_send_msg_template = None
+
+    # ===== 登录缓存：抖音同款 =====
     def _create_context(self, browser):
         state_path = str(STATE_FILE)
         if os.path.exists(state_path):
@@ -146,7 +157,6 @@ class LiveListener:
             print("🆕 未发现视频号登录缓存，需要扫码登录：", state_path)
             ctx = browser.new_context(no_viewport=True)
 
-        # ✅ 关键：启动就打印当前 cookies 数量，立刻判断“加载到底生效没”
         try:
             cks = ctx.cookies(["https://channels.weixin.qq.com"])
             print("🍪 启动后 cookies(channels.weixin.qq.com) =", len(cks))
@@ -156,45 +166,33 @@ class LiveListener:
         return ctx
 
     def _is_logged_in(self, page: Page) -> bool:
-        """更贴近真实：进入 HOME 或 liveBuild 都算已登录；只要不是登录页"""
         url = (_get_real_url(page) or "").lower()
-
-        if url.startswith(LIVE_URL_PREFIX.lower()):
+        if url.startswith((LIVE_URL_PREFIX or "").lower()):
             return True
         if (HOME_URL or "").lower() and url.startswith((HOME_URL or "").lower()):
             return True
-
-        # 兜底排除登录页
         if "login" in url or "passport" in url or "auth" in url:
             return False
-
-        # 如果已经在 channels.weixin.qq.com 域且不是登录页，一般也算登录完成
         if "channels.weixin.qq.com" in url:
             return True
-
         return False
 
     def _maybe_save_login_state(self, context, page):
         if getattr(self, "_login_state_saved", False):
             return
-
         if not self._is_logged_in(page):
             return
 
-        # ✅ 再保险：必须确认 cookie 非空，才允许保存（避免空态覆盖）
         try:
             cks = context.cookies(["https://channels.weixin.qq.com"])
             if not cks:
-                # 很多“看起来登录了但没 cookie”的情况（比如还没跳转完成）
                 return
         except Exception:
-            # cookies 读失败也别保存
             return
 
         try:
             state_path = str(STATE_FILE)
             tmp = state_path + ".tmp"
-
             context.storage_state(path=tmp)
 
             st = json.load(open(tmp, "r", encoding="utf-8"))
@@ -209,14 +207,13 @@ class LiveListener:
 
             os.replace(tmp, state_path)
             self._login_state_saved = True
-
             print("💾 视频号登录态已保存：", state_path, "size=", os.path.getsize(state_path))
             print("✅ 保存时 cookies =", len(cookies), "url=", _get_real_url(page))
 
         except Exception as e:
             print("⚠️ 保存视频号登录态失败：", e)
 
-    # ===== 抓参数/headers =====
+    # ===== 抓参数/headers + ✅公屏模板 =====
     def _handle_request(self, req: Request):
         try:
             if req.method.upper() != "POST":
@@ -232,6 +229,9 @@ class LiveListener:
                 self.state.wx_finderUsername = post.get("finderUsername") or self.state.wx_finderUsername
                 self.state.wx_liveId = post.get("liveId") or self.state.wx_liveId
 
+                # ✅补：保存 headers 模板（后面公屏/回复都能复用）
+                self.state.wx_post_headers_template = dict(req.headers or {})
+
                 if not self.state.wx_post_url:
                     self.state.wx_post_url = url.replace(
                         "mmfinderassistant-bin/live/msg",
@@ -240,25 +240,142 @@ class LiveListener:
                     print("✅ 已由 live/msg 推导 wx_post_url =", self.state.wx_post_url)
                 return
 
-            # 管理员手动发消息：存完整 URL + headers 模板
-            if "mmfinderassistant-bin/live/post_live_app_msg" in url and isinstance(post, dict):
-                self.state.wx_post_url = url
+            # ✅ 公屏手动发送接口：post_live_msg（按你提供的可用数据）
+            if "mmfinderassistant-bin/live/post_live_msg" in url and isinstance(post, dict):
+                # 保存公屏发送 URL + headers + body 模板
+                self.state.wx_public_post_url = url
+                self.state.wx_public_headers_template = dict(req.headers or {})
+                self.state.wx_public_body_template = dict(post)
+
+                # 同步关键参数（方便兜底）
                 self.state.wx_liveCookies = post.get("liveCookies") or self.state.wx_liveCookies
                 self.state.wx_objectId = post.get("objectId") or self.state.wx_objectId
                 self.state.wx_finderUsername = post.get("finderUsername") or self.state.wx_finderUsername
                 self.state.wx_liveId = post.get("liveId") or self.state.wx_liveId
 
-                self.state.wx_post_headers_template = dict(req.headers or {})
-                print("✅ 已捕获管理员发消息接口 wx_post_url（更稳）")
-                print("✅ 已捕获 wx_post_headers_template：",
-                      f"cookie_len={len(_lower_headers(req.headers or {}).get('cookie',''))} "
-                      f"ua_len={len(_lower_headers(req.headers or {}).get('user-agent',''))}")
+                print("✅ 已捕获 视频号公屏接口 post_live_msg 模板")
                 return
 
         except Exception as e:
             print("⚠️ _handle_request error:", e)
 
-    # ===== 发送文字回复 =====
+    # ===== ✅直接发公屏（复用模板，不猜 msgType）=====
+    def send_public_text(self, text: str) -> bool:
+        """
+        ✅ 视频号公屏发送（优先模板；无模板也能兜底发送）
+        接口：/mmfinderassistant-bin/live/post_live_msg
+        msgJson：{"content":"xxx","type":1}
+        """
+        text = (text or "").strip()
+        if not text:
+            return False
+        if not self._context:
+            print("⚠️ 视频号公屏发送条件未就绪（context缺失）")
+            return False
+
+        # 1) URL：优先捕获的公屏 URL；否则由回复 URL 推导
+        url = (getattr(self.state, "wx_public_post_url", "") or "").strip()
+        if not url:
+            wx_post_url = (getattr(self.state, "wx_post_url", "") or "").strip()
+            if wx_post_url:
+                url = wx_post_url.replace("post_live_app_msg", "post_live_msg")
+
+        if not url:
+            print("⚠️ 视频号公屏发送失败：既没有抓到 wx_public_post_url，也无法从 wx_post_url 推导")
+            return False
+
+        # 2) body：有模板就克隆模板；无模板就按回复逻辑组装一个最小可用包
+        body_tpl = getattr(self.state, "wx_public_body_template", None)
+        if isinstance(body_tpl, dict):
+            body = dict(body_tpl)
+        else:
+            # ✅兜底：按 state 组包（和回复逻辑同字段体系）
+            if not all([self.state.wx_liveCookies, self.state.wx_objectId, self.state.wx_finderUsername,
+                        self.state.wx_liveId]):
+                print("⚠️ 视频号公屏兜底组包失败：liveCookies/objectId/finderUsername/liveId 不齐全")
+                return False
+            body = {
+                "liveCookies": self.state.wx_liveCookies,
+                "objectId": self.state.wx_objectId,
+                "finderUsername": self.state.wx_finderUsername,
+                "liveId": self.state.wx_liveId,
+                "_log_finder_uin": "",
+                "_log_finder_id": self.state.wx_finderUsername,
+                "rawKeyBuff": None,
+                "pluginSessionId": None,
+                "scene": 7,
+                "reqScene": 7,
+            }
+
+        # 3) 强制覆盖关键字段（避免模板旧了导致发不出去）
+        if self.state.wx_liveCookies:
+            body["liveCookies"] = self.state.wx_liveCookies
+        if self.state.wx_objectId:
+            body["objectId"] = self.state.wx_objectId
+        if self.state.wx_finderUsername:
+            body["finderUsername"] = self.state.wx_finderUsername
+            body["_log_finder_id"] = self.state.wx_finderUsername
+            body["_log_finder_uin"] = body.get("_log_finder_uin", "") or ""
+        if self.state.wx_liveId:
+            body["liveId"] = self.state.wx_liveId
+
+        body["msgJson"] = json.dumps({"content": text, "type": 1}, ensure_ascii=False)
+        body["clientMsgId"] = f"pc_{self.state.wx_finderUsername}_{uuid.uuid4()}"
+        body["timestamp"] = str(int(time.time() * 1000))
+        body.setdefault("scene", 7)
+        body.setdefault("reqScene", 7)
+
+        # 4) headers：优先公屏模板 headers，其次回复模板 headers；再不行就最小 headers
+        headers_tpl = getattr(self.state, "wx_public_headers_template", None) or {}
+        if not headers_tpl:
+            headers_tpl = getattr(self.state, "wx_post_headers_template", None) or {}
+
+        headers = dict(headers_tpl) if isinstance(headers_tpl, dict) else {}
+        # 删掉容易冲突/无意义的
+        for k in ["content-length", "Content-Length", "host", "Host"]:
+            headers.pop(k, None)
+
+        # 统一 content-type（避免同时存在 Content-Type 和 content-type）
+        headers.pop("content-type", None)
+        headers.pop("Content-Type", None)
+        headers["Content-Type"] = "application/json"
+
+        try:
+            resp = self._context.request.post(
+                url,
+                data=json.dumps(body, ensure_ascii=False),
+                headers=headers,
+                timeout=10_000
+            )
+            ok = 200 <= resp.status < 300
+            print("📢 视频号公屏发送 status=", resp.status, "ok=", ok)
+            if not ok:
+                try:
+                    print("   ↪ resp.text(head800) =", (resp.text() or "")[:800].replace("\n", "\\n"))
+                except Exception:
+                    pass
+            return ok
+        except Exception as e:
+            print("❌ 视频号公屏发送异常：", e)
+            return False
+
+    # ✅ 给 entry_service tick 用：处理公屏队列
+    def process_public_screen_queue(self):
+        import queue as _q
+        q = getattr(self.state, "public_screen_queue_wx", None)
+        if not q:
+            return
+        for _ in range(3):
+            try:
+                text = q.get_nowait()
+            except _q.Empty:
+                break
+            try:
+                self.send_public_text(text)
+            except Exception as e:
+                print("⚠️ process_public_screen_queue(wx) error:", e)
+
+    # ===== 发送文字回复（你原版不动）=====
     def _send_reply_to_user(self, m: dict, text: str) -> bool:
         if not self._context or not self.state.wx_post_url:
             print("⚠️ 视频号发送条件未就绪（wx_post_url/context缺失）")
@@ -356,10 +473,11 @@ class LiveListener:
         else:
             print("❌ 视频号自动回复失败（已打印失败原因）")
 
-    # ===== 监听状态 =====
+    # ===== ✅修复：监听状态更稳（startswith -> contains 兜底）=====
     def _update_listen_state(self, page: Page, reason: str = ""):
         url = _get_real_url(page)
-        should = url.startswith(LIVE_URL_PREFIX)
+        prefix = (LIVE_URL_PREFIX or "")
+        should = bool(prefix and (url.startswith(prefix) or (prefix in url)))
 
         if should and not self.state.is_listening:
             self.state.is_listening = True
@@ -376,7 +494,7 @@ class LiveListener:
             self.state.is_listening = False
             print("🚪 已离开视频号直播页（不中断播放）")
 
-    # ===== 处理消息 =====
+    # ===== 处理消息（你原版不动）=====
     def _handle_live_msg_json(self, inner: Dict[str, Any]):
         for m in inner.get("msg_list", []):
             seq_raw = m.get("seq")
@@ -432,11 +550,12 @@ class LiveListener:
             nickname, content, type_ = _parse_app_msg(app_msg)
             self.on_event(nickname, content, type_)
 
+    # ===== ✅修复：不要硬依赖 is_listening 才解析（兜底）=====
     def _handle_response(self, resp: Response):
         if TARGET_API_KEYWORD not in resp.url:
             return
-        if not self.state.is_listening:
-            return
+
+        # ✅ 即使 is_listening 还没置 True，也尝试解析一次（防止 URL 变体导致“永远不进”）
         try:
             outer = resp.json()
         except Exception:
@@ -451,9 +570,15 @@ class LiveListener:
         except Exception:
             return
 
+        # 如果这时还没 listening，但已经能解析到消息，顺手认为“已在直播页”
+        if not self.state.is_listening:
+            self.state.is_listening = True
+            self.state.live_ready = True
+            print("✅ 通过消息流自动判定已进入直播页（listening=True）")
+
         self._handle_live_msg_json(inner)
 
-    # ===== 主循环 =====
+    # ===== 主循环（你原版不动）=====
     def run(self, tick: Callable[[], None]):
         with sync_playwright() as p:
             browser = p.chromium.launch(

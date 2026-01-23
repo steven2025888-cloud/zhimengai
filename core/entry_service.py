@@ -8,19 +8,17 @@ from pathlib import Path
 from PySide6.QtWidgets import QApplication, QDialog
 from ui.license_login_dialog import LicenseLoginDialog
 
-from config import ( WS_URL
-)
-from core.state import AppState, app_state
+from config import WS_URL
+from core.state import app_state
 from core.ws_client import WSClient
 from core.live_listener import LiveListener
-from audio.audio_picker import pick_by_prefix
-from audio.audio_dispatcher import AudioDispatcher
-
-from keywords import QA_KEYWORDS
-from core.ws_command_router import WSCommandRouter
 from core.douyin_listener import DouyinListener
 
+from audio.audio_picker import pick_by_prefix
+from audio.audio_dispatcher import AudioDispatcher
+from core.ws_command_router import WSCommandRouter
 from audio.folder_order_manager import FolderOrderManager
+
 folder_manager = FolderOrderManager()
 
 
@@ -49,6 +47,7 @@ def run_engine(license_key: str):
     from config import AUDIO_BASE_DIR
     from audio.folder_order_manager import FolderOrderManager
 
+    # ===== runtime_state.json 同步到 app_state =====
     try:
         from core.runtime_state import load_runtime_state
         rt_flags = load_runtime_state() or {}
@@ -60,13 +59,20 @@ def run_engine(license_key: str):
     if rt_flags.get("zhuli_audio_dir"):
         state.zhuli_audio_dir = str(rt_flags.get("zhuli_audio_dir"))
 
-    # ✅ 关注/点赞目录也要在引擎启动时从 runtime_state.json 同步到 app_state
     if rt_flags.get("follow_audio_dir"):
         state.follow_audio_dir = str(rt_flags.get("follow_audio_dir"))
     if rt_flags.get("like_audio_dir"):
         state.like_audio_dir = str(rt_flags.get("like_audio_dir"))
 
-    # （建议）关注/点赞播放开关和冷却也一并同步
+    if "ai_reply" in rt_flags:
+        state.ai_reply = bool(rt_flags.get("ai_reply"))
+
+    if rt_flags.get("ai_api_key") is not None:
+        state.ai_api_key = str(rt_flags.get("ai_api_key") or "")
+
+    if rt_flags.get("ai_model") is not None:
+        state.ai_model = str(rt_flags.get("ai_model") or "")
+
     if "enable_follow_audio" in rt_flags:
         state.enable_follow_audio = bool(rt_flags.get("enable_follow_audio"))
     if "enable_like_audio" in rt_flags:
@@ -77,15 +83,23 @@ def run_engine(license_key: str):
         except Exception:
             pass
 
+    if "enable_comment_record" in rt_flags:
+        state.enable_comment_record = bool(rt_flags.get("enable_comment_record"))
+    if "enable_reply_record" in rt_flags:
+        state.enable_reply_record = bool(rt_flags.get("enable_reply_record"))
+    if "enable_reply_collect" in rt_flags:
+        state.enable_reply_collect = bool(rt_flags.get("enable_reply_collect"))
 
     anchor_dir = getattr(state, "anchor_audio_dir", None) or str(AUDIO_BASE_DIR)
     state.folder_manager = FolderOrderManager(anchor_dir)
 
+    # ===== 报时线程 =====
     from audio.voice_reporter import start_reporter_thread
     start_reporter_thread(dispatcher, state)
 
     router = WSCommandRouter(state, dispatcher)
 
+    # ===== AudioDispatcher worker =====
     def audio_worker(dispatcher_: AudioDispatcher):
         while True:
             try:
@@ -101,6 +115,7 @@ def run_engine(license_key: str):
 
     threading.Thread(target=audio_worker, args=(app_state.audio_dispatcher,), daemon=True).start()
 
+    # ===== runtime keywords 辅助（你原逻辑保留）=====
     def get_runtime_qa_keywords() -> dict:
         try:
             from core.runtime_state import load_runtime_state
@@ -119,7 +134,80 @@ def run_engine(license_key: str):
         except Exception:
             return {}
 
+    def _rt_get() -> dict:
+        try:
+            from core.runtime_state import load_runtime_state
+            return load_runtime_state() or {}
+        except Exception:
+            return {}
 
+    def _rt_save(d: dict) -> bool:
+        try:
+            from core.runtime_state import save_runtime_state
+            save_runtime_state(d)
+            return True
+        except Exception as e:
+            print("⚠️ save_runtime_state failed:", e)
+            return False
+
+    def _qa_key_name(rt: dict) -> str:
+        for k in ("qa_keywords", "QA_KEYWORDS", "keywords", "keyword_rules"):
+            if isinstance(rt.get(k), dict):
+                return k
+        return "qa_keywords"
+
+    def collect_reply_to_keyword(prefix: str, reply_text: str) -> bool:
+        if not bool(getattr(app_state, "enable_reply_collect", False)):
+            return False
+
+        prefix = str(prefix or "").strip()
+        reply_text = str(reply_text or "").strip()
+        if not prefix or not reply_text:
+            return False
+
+        rt = _rt_get()
+        key = _qa_key_name(rt)
+
+        qa_map = rt.get(key)
+        if not isinstance(qa_map, dict) or not qa_map:
+            try:
+                from keywords import QA_KEYWORDS as _QA
+                qa_map = dict(_QA) if isinstance(_QA, dict) else {}
+            except Exception:
+                qa_map = {}
+
+        target_cfg = None
+        for cfg in qa_map.values():
+            if not isinstance(cfg, dict):
+                continue
+            if str(cfg.get("prefix") or "") == prefix:
+                target_cfg = cfg
+                break
+
+        if target_cfg is None:
+            return False
+
+        arr = target_cfg.get("reply", []) or []
+        if not isinstance(arr, list):
+            arr = []
+        arr = [str(x).strip() for x in arr if str(x).strip()]
+
+        if reply_text in arr:
+            return True
+
+        arr.insert(0, reply_text)
+
+        MAX_REPLY_PER_KEYWORD = 60
+        if len(arr) > MAX_REPLY_PER_KEYWORD:
+            arr = arr[:MAX_REPLY_PER_KEYWORD]
+
+        target_cfg["reply"] = arr
+        rt[key] = qa_map
+        return _rt_save(rt)
+
+    app_state.collect_reply_to_keyword_cb = collect_reply_to_keyword
+
+    # ===== WS 回调（你原逻辑保留）=====
     def on_ws_message(data):
         if not isinstance(data, dict):
             return
@@ -189,7 +277,6 @@ def run_engine(license_key: str):
             app_state.pending_hit = (best_prefix, best_reply)
             return best_prefix, best_reply
 
-        # 降级：只要 must
         for cfg in qa_map.values():
             prefix = cfg.get("prefix")
             if not prefix:
@@ -218,17 +305,33 @@ def run_engine(license_key: str):
 
         return best_prefix, best_reply
 
-
     def on_danmaku(nickname: str, content: str):
         if not app_state.live_ready:
             app_state.live_ready = True
 
         ws.push(nickname, content, 1)
 
+        if not hasattr(app_state, "hit_keyword_by_nick"):
+            app_state.hit_keyword_by_nick = {}
+        app_state.last_comment = {"nickname": nickname or "未知用户", "content": content or "", "ts": time.time()}
+
         prefix, reply_text = hit_qa_question(content)
 
         if prefix:
             app_state.pending_hit = (prefix, reply_text)
+            app_state.last_trigger_keyword = prefix
+            try:
+                app_state.hit_keyword_by_nick[str(nickname or "")] = prefix
+            except Exception:
+                pass
+
+            app_state.last_hit_detail = {
+                "nickname": nickname or "未知用户",
+                "content": content or "",
+                "trigger_keyword": prefix,
+                "reply_text": reply_text or "",
+                "ts": time.time(),
+            }
 
             if getattr(app_state, "enable_danmaku_reply", False):
                 try:
@@ -240,16 +343,24 @@ def run_engine(license_key: str):
 
             return reply_text
 
+        app_state.last_trigger_keyword = ""
+        try:
+            app_state.hit_keyword_by_nick[str(nickname or "")] = ""
+        except Exception:
+            pass
+        app_state.last_hit_detail = {
+            "nickname": nickname or "未知用户",
+            "content": content or "",
+            "trigger_keyword": "",
+            "reply_text": "",
+            "ts": time.time(),
+        }
         return ""
 
     app_state.on_danmaku_cb = on_danmaku
 
     def on_event(nickname: str, content: str, type_: int):
         ws.push(nickname, content, type_)
-
-        # ===== 视频号事件：关注/点赞触发音频 =====
-        # LiveListener: 关注 type_=4 (msgType=20078), 点赞 type_=2 (msgType=20122)
-        # 我们统一映射到 WSCommandRouter：-2 关注 / -3 点赞（内部做冷却+开关+入队）
         try:
             if int(type_) == 4:  # 关注
                 router.handle(-2)
@@ -258,6 +369,7 @@ def run_engine(license_key: str):
         except Exception as e:
             print("on_event follow/like error:", e)
 
+    # ===== 轮播线程 =====
     def random_push_loop():
         from core.state import app_state as s
         while True:
@@ -280,15 +392,29 @@ def run_engine(license_key: str):
 
     threading.Thread(target=random_push_loop, daemon=True).start()
 
+    # ===== 公屏轮播：队列 + rotator =====
+    import queue
+    from core.public_screen_rotator import start_public_screen_rotator
+
+    if not hasattr(app_state, "public_screen_queue_wx") or app_state.public_screen_queue_wx is None:
+        app_state.public_screen_queue_wx = queue.Queue()
+    if not hasattr(app_state, "public_screen_queue_dy") or app_state.public_screen_queue_dy is None:
+        app_state.public_screen_queue_dy = queue.Queue()
+
+    start_public_screen_rotator(app_state)
+
+    # ===== 视频号 listener 线程 =====
     def listener_thread():
         listener = LiveListener(state=app_state, on_danmaku=on_danmaku, on_event=on_event)
-        listener.run(tick=lambda: None)
+        listener.run(tick=listener.process_public_screen_queue)  # ✅ 依赖 LiveListener 里实现
 
     threading.Thread(target=listener_thread, daemon=True).start()
 
+    # ===== 抖音 listener 线程 =====
     def douyin_listener_thread():
-        dy_listener = DouyinListener(state=app_state, on_danmaku=on_danmaku)
-        dy_listener.run(tick=lambda: None)
+        # ✅ 修复：必须把 on_event 传进去（哪怕抖音暂时不用）
+        dy_listener = DouyinListener(state=app_state, on_danmaku=on_danmaku, on_event=on_event)
+        dy_listener.run(tick=dy_listener.process_public_screen_queue)  # ✅ 依赖 DouyinListener 里实现
 
     threading.Thread(target=douyin_listener_thread, daemon=True).start()
 
@@ -297,7 +423,6 @@ def run_engine(license_key: str):
 
 
 def run():
-
     setup_playwright_env()
 
     app = QApplication(sys.argv)

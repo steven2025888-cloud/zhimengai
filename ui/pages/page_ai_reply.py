@@ -7,8 +7,10 @@ from PySide6.QtCore import Qt, QThread, Signal, QObject, QUrl, QSize
 from PySide6.QtGui import QDesktopServices, QFont, QIcon
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
-    QFrame, QComboBox, QMessageBox, QPlainTextEdit, QButtonGroup, QSizePolicy, QStyle
+    QFrame, QComboBox, QMessageBox, QPlainTextEdit, QButtonGroup, QSizePolicy, QStyle,
+    QCheckBox
 )
+
 
 try:
     from core.runtime_state import load_runtime_state, save_runtime_state
@@ -341,6 +343,14 @@ class AiReplyPage(QWidget):
         self.lbl_model_tip.setWordWrap(True)
         lay_m.addWidget(self.lbl_model_tip)
 
+        row_sw = QHBoxLayout()
+        self.chk_ai_reply = QCheckBox("启用 AI 改写回复（从关键词回复里随机一句，交给模型改写后发送）")
+        self.chk_ai_reply.setObjectName("chk_ai_reply")
+        self.chk_ai_reply.stateChanged.connect(self._on_ai_reply_toggle)
+        row_sw.addWidget(self.chk_ai_reply, 1)
+        lay_m.addLayout(row_sw)
+
+
         # 这里用“带图标”的下拉（你要的 logo 风格）
         row_model = QHBoxLayout()
         self.cmb_model = QComboBox()
@@ -354,6 +364,10 @@ class AiReplyPage(QWidget):
         root.addStretch(1)
 
         self._apply_local_qss()
+
+    def _on_ai_reply_toggle(self, _):
+        _rt_set("ai_reply", bool(self.chk_ai_reply.isChecked()))
+
 
     def _apply_local_qss(self):
         self.setStyleSheet(
@@ -460,6 +474,14 @@ class AiReplyPage(QWidget):
 
     def _load_from_runtime(self):
         st = _rt_get()
+
+        ai_on = bool(st.get("ai_reply", False))
+        if hasattr(self, "chk_ai_reply"):
+            self.chk_ai_reply.blockSignals(True)
+            self.chk_ai_reply.setChecked(ai_on)
+            self.chk_ai_reply.blockSignals(False)
+
+
         key = str(st.get("ai_api_key", "") or "")
         model_id = str(st.get("ai_model", "") or "")
         balance = st.get("ai_balance", None)
@@ -546,7 +568,7 @@ class AiReplyPage(QWidget):
             return
 
         model_id = (self._selected_model_id or "").strip() or "gpt-5-mini"
-        host = str(_cfg_get("AI_API_HOST", "API_HOST", default="yunwu.ai") or "yunwu.ai").strip()
+        host = str(_cfg_get("AI_API_HOST", "API_HOST", default="ai.zhimengai.xyz") or "ai.zhimengai.xyz").strip()
         path = str(_cfg_get("AI_API_PATH", "API_PATH", default="/v1/chat/completions") or "/v1/chat/completions").strip()
         if not path.startswith("/"):
             path = "/" + path

@@ -106,6 +106,21 @@ class WorkbenchPage(QWidget):
 
         self.sw_report = SwitchToggle(checked=app_state.enable_voice_report)
         self.sw_auto_reply = SwitchToggle(checked=app_state.enable_auto_reply)
+        # 🤖 AI 自动回复（以 runtime_state.json: ai_reply 为准）
+        if not hasattr(app_state, "ai_reply"):
+            app_state.ai_reply = False
+
+        # ✅ 启动时从 runtime_state.json 读取并同步到 app_state（否则重启 UI 永远默认关）
+        try:
+            from core.runtime_state import load_runtime_state
+            rt = load_runtime_state() or {}
+            if "ai_reply" in rt:
+                app_state.ai_reply = bool(rt.get("ai_reply"))
+        except Exception:
+            pass
+
+        self.sw_ai_reply = SwitchToggle(checked=bool(getattr(app_state, "ai_reply", False)))
+
         self.sw_danmaku_reply = SwitchToggle(checked=app_state.enable_danmaku_reply)
         self.sw_zhuli = SwitchToggle(checked=app_state.enable_zhuli)
 
@@ -195,6 +210,7 @@ class WorkbenchPage(QWidget):
 
         self.sw_report.toggled.connect(self.toggle_report_switch)
         self.sw_auto_reply.toggled.connect(self.toggle_auto_reply)
+        self.sw_ai_reply.toggled.connect(self.toggle_ai_reply)
         self.sw_danmaku_reply.toggled.connect(self.toggle_danmaku_reply)
         self.sw_zhuli.toggled.connect(self.toggle_zhuli)
         self.btn_test_danmaku.clicked.connect(self.send_test_danmaku)
@@ -825,6 +841,7 @@ class WorkbenchPage(QWidget):
         auto_body.addWidget(self._switch_row("⏱ 随机报时", self.sw_report))
         auto_body.addWidget(self._button_row("⏱ 报时间隔", self.btn_report_interval))
         auto_body.addWidget(self._switch_row("💬 关键词文本回复", self.sw_auto_reply))
+        auto_body.addWidget(self._switch_row("🤖 AI 自动回复", self.sw_ai_reply))
         auto_body.addWidget(self._switch_row("📣 弹幕语音回复", self.sw_danmaku_reply))
         auto_body.addWidget(self._switch_row("🎧 助播关键词语音", self.sw_zhuli))
 
@@ -1061,6 +1078,12 @@ class WorkbenchPage(QWidget):
         app_state.enable_auto_reply = bool(checked)
         self.ctx["save_runtime_flag"]("enable_auto_reply", app_state.enable_auto_reply)
         print("💬 关键词自动回复：已开启" if checked else "💬 关键词自动回复：已关闭")
+
+    def toggle_ai_reply(self, checked: bool):
+        """AI 自动回复总开关（写入 runtime_state.json: ai_reply）。"""
+        app_state.ai_reply = bool(checked)
+        self.ctx["save_runtime_flag"]("ai_reply", app_state.ai_reply)
+        print("🤖 AI 自动回复：已开启" if checked else "🤖 AI 自动回复：已关闭")
 
     def toggle_report_switch(self, checked: bool):
         app_state.enable_voice_report = bool(checked)

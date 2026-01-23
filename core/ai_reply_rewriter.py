@@ -5,14 +5,38 @@ from typing import Any, Dict, Optional
 import json
 import re
 import http.client
-
+from pathlib import Path
 
 # ---------- runtime_state ----------
-def _load_runtime_state() -> Dict[str, Any]:
+def _fallback_runtime_state_path() -> Path:
+    # ✅ 和你 config.get_app_dir() 一致：frozen 用 exe 目录，源码用项目目录
     try:
-        from core.runtime_state import load_runtime_state  # 你的项目里正常应当有
+        import sys
+        from pathlib import Path
+        if getattr(sys, "frozen", False):
+            base = Path(sys.executable).resolve().parent
+        else:
+            base = Path(__file__).resolve().parents[1]  # core/*.py -> 项目根
+        return base / "runtime_state.json"
+    except Exception:
+        return Path("runtime_state.json").resolve()
+
+def _load_runtime_state() -> dict:
+    # 1) 优先用 core.runtime_state（项目统一入口）
+    try:
+        from core.runtime_state import load_runtime_state
         if callable(load_runtime_state):
-            return load_runtime_state() or {}
+            st = load_runtime_state() or {}
+            if isinstance(st, dict) and st:
+                return st
+    except Exception:
+        pass
+
+    # 2) 兜底：直接读 runtime_state.json（避免线程/导入问题导致读不到）
+    p = _fallback_runtime_state_path()
+    try:
+        if p.exists():
+            return json.loads(p.read_text(encoding="utf-8"))
     except Exception:
         pass
     return {}
@@ -70,16 +94,27 @@ def rewrite_keyword_reply_if_enabled(reply_text: str, max_chars: int = 50) -> st
         return ""
 
     st = _load_runtime_state()
+
+
+    print("🧠 ai_reply(runtime_state) =", st.get("ai_reply"),
+          " key=", bool(st.get("ai_api_key")),
+          " model=", st.get("ai_model"))
+
     if not bool(st.get("ai_reply", False)):
         return base
+
 
     api_key = str(st.get("ai_api_key") or "").strip()
     model = str(st.get("ai_model") or "").strip()
     if not api_key or not model:
+        print("🤖 AI改写：key/model 为空，回退原文")
         return base
 
-    host = _cfg_get("AI_API_HOST", "DPS_API_HOST", default="api.openai.com")
-    path = _cfg_get("AI_API_PATH", "DPS_API_PATH", default="/v1/chat/completions")
+    # ✅ 默认值改成你项目里 AI 设置页一致的 host（非常关键）
+    host = _cfg_get("AI_API_HOST", "API_HOST", "DPS_API_HOST", default="ai.zhimengai.xyz").strip()
+    path = _cfg_get("AI_API_PATH", "API_PATH", "DPS_API_PATH", default="/v1/chat/completions").strip()
+    if not path.startswith("/"):
+        path = "/" + path
 
     prompt = (
         "你是直播间客服回复改写助手。"
@@ -103,21 +138,27 @@ def rewrite_keyword_reply_if_enabled(reply_text: str, max_chars: int = 50) -> st
     }
 
     try:
-        # 你 UI 测试线程也是这么连的（https + chat/completions 思路一致）:contentReference[oaicite:4]{index=4}
+        print(f"🤖 AI改写请求：https://{host}{path} model={model} in='{base}'")
+
         conn = http.client.HTTPSConnection(host, timeout=8)
-        conn.request("POST", path, body=json.dumps(payload, ensure_ascii=False).encode("utf-8"), headers=headers)
+        conn.request("POST", path,
+                     body=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                     headers=headers)
         resp = conn.getresponse()
         raw = resp.read().decode("utf-8", "ignore")
+
         if not (200 <= resp.status < 300):
+            print(f"🤖 AI改写失败：HTTP {resp.status} raw(head200)={(raw or '')[:200].replace(chr(10),' ')}")
             return base
 
         data = json.loads(raw) if raw else {}
-        txt = (
-            (data.get("choices") or [{}])[0]
-            .get("message", {})
-            .get("content", "")
-        )
+        txt = ((data.get("choices") or [{}])[0].get("message") or {}).get("content", "")
         out = _ensure_punct_and_trim(str(txt), max_chars=max_chars)
+
+        print(f"🤖 AI改写结果：out='{out}'")
         return out or base
-    except Exception:
+
+    except Exception as e:
+        print("🤖 AI改写异常：", e)
         return base
+

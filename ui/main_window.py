@@ -14,7 +14,8 @@ from core.runtime_state import load_runtime_state
 from core.state import app_state
 from config import AUDIO_BASE_DIR, ZHULI_AUDIO_DIR, other_gz_audio, other_dz_audio
 from ui.pages.page_script_rewrite import ScriptRewritePage
-
+from ui.pages.page_comment_manager import CommentManagerPage
+from ui.pages.page_public_screen import PublicScreenPage
 
 
 print = functools.partial(print, flush=True)
@@ -59,6 +60,25 @@ def bootstrap_runtime_into_app_state():
     app_state.enable_danmaku_reply = bool(runtime.get("enable_danmaku_reply", False))
     app_state.enable_auto_reply = bool(runtime.get("enable_auto_reply", False))
     app_state.enable_zhuli = bool(runtime.get("enable_zhuli", True))
+
+    # ✅ 评论/回复日志开关（默认 False）
+    app_state.enable_comment_record = bool(runtime.get("enable_comment_record", False))
+    app_state.enable_reply_record = bool(runtime.get("enable_reply_record", False))
+    app_state.enable_reply_collect = bool(runtime.get("enable_reply_collect", False))
+
+    # ===== 公屏轮播 =====
+    app_state.enable_public_screen_wx = bool(runtime.get("enable_public_screen_wx", False))
+    app_state.enable_public_screen_dy = bool(runtime.get("enable_public_screen_dy", False))
+
+    try:
+        app_state.public_screen_interval_min = int(runtime.get("public_screen_interval_min", 5) or 5)
+    except Exception:
+        app_state.public_screen_interval_min = 5
+
+    msgs = runtime.get("public_screen_messages", []) or []
+    if not isinstance(msgs, list):
+        msgs = []
+    app_state.public_screen_messages = [str(x).strip() for x in msgs if str(x).strip()]
 
     # 变量调节
     app_state.var_pitch_enabled = bool(runtime.get("var_pitch_enabled", True))
@@ -228,9 +248,13 @@ class MainWindow(QWidget):
 
             PageSpec("话术改写", lambda: ScriptRewritePage(ctx())),
 
+            PageSpec("评论管理", lambda: CommentManagerPage(ctx())),
+
+            PageSpec("公屏轮播", lambda: PublicScreenPage(ctx())),
+
+
             PageSpec("回复弹窗", lambda: PlaceholderPage("回复弹窗（开发中）")),
 
-            PageSpec("评论管理", lambda: PlaceholderPage("评论管理（开发中）")),
         ]
 
     def _on_page_changed(self, idx: int):
