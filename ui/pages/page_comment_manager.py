@@ -57,6 +57,8 @@ class CommentManagerPage(QWidget):
         self._collect_index_path = self._get_collect_index_path(self._log_path)
         self._collect_index = self._load_collect_index()
 
+        # key_for_collect -> row (O(1) 更新入库状态)
+        self._row_by_collect_key: Dict[str, int] = {}
         self._last_pos = 0
         self._timer: Optional[QTimer] = None
 
@@ -161,8 +163,8 @@ class CommentManagerPage(QWidget):
         tcl.addLayout(topbar)
 
         # 8列：最后一列操作
-        self.table = QTableWidget(0, 7)
-        self.table.setHorizontalHeaderLabels(["时间", "平台", "用户", "类型", "内容", "触发关键词", "已入库"])
+        self.table = QTableWidget(0, 8)
+        self.table.setHorizontalHeaderLabels(["时间", "平台", "用户", "类型", "内容", "触发关键词", "已入库", "操作"])
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -191,6 +193,7 @@ class CommentManagerPage(QWidget):
         hh.setSectionResizeMode(5, QHeaderView.ResizeToContents)
         hh.setSectionResizeMode(6, QHeaderView.ResizeToContents)
 
+        hh.setSectionResizeMode(7, QHeaderView.ResizeToContents)
         self.table.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
         self.table.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
 
@@ -336,6 +339,7 @@ class CommentManagerPage(QWidget):
 
     def _reload_all(self):
         self.table.setRowCount(0)
+        self._row_by_collect_key.clear()
         self._last_pos = 0
         self._poll_new_lines(load_all=True)
 
@@ -349,23 +353,30 @@ class CommentManagerPage(QWidget):
             if not load_all and self._last_pos > size:
                 self._last_pos = 0
 
+            max_lines = 300  # 每次 tick 最多处理多少行，避免 UI 卡顿
+            added = 0
+
             with open(path, "r", encoding="utf-8") as f:
                 if not load_all:
                     f.seek(self._last_pos)
-                lines = f.readlines()
-                self._last_pos = f.tell()
 
-            added = 0
-            for line in lines:
-                line = (line or "").strip()
-                if not line:
-                    continue
-                try:
-                    evt = json.loads(line)
-                except Exception:
-                    continue
-                self._append_event_row(evt)
-                added += 1
+                while True:
+                    if added >= max_lines:
+                        break
+                    line = f.readline()
+                    if not line:
+                        break
+                    line = (line or "").strip()
+                    if not line:
+                        continue
+                    try:
+                        evt = json.loads(line)
+                    except Exception:
+                        continue
+                    self._append_event_row(evt)
+                    added += 1
+
+                self._last_pos = f.tell()
 
             if added and self.chk_autoscroll.isChecked():
                 self.table.scrollToBottom()
@@ -374,6 +385,7 @@ class CommentManagerPage(QWidget):
             pass
 
     # ---------- Row append / style ----------
+
     def _append_event_row(self, evt: Dict[str, Any]):
         ts = _safe_str(evt.get("ts")) or _now_ts()
         platform = _safe_str(evt.get("platform"))
@@ -387,7 +399,6 @@ class CommentManagerPage(QWidget):
 
         is_reply = (typ == "reply")
         typ_s = "回复" if is_reply else "评论"
-
         platform_s = "抖音" if platform == "douyin" else ("视频号" if platform in ("wx_channels", "wx") else platform)
 
         trigger_kw = _safe_str(meta.get("trigger_keyword") or meta.get("keyword") or "")
@@ -395,31 +406,74 @@ class CommentManagerPage(QWidget):
             trigger_kw = self._infer_trigger_keyword(nickname)
 
         key_for_collect = self._make_collect_key(ts, platform, nickname, content)
-
         collected = bool(self._collect_index.get(key_for_collect, False))
 
         row = self.table.rowCount()
         self.table.insertRow(row)
         self.table.setRowHeight(row, 38)
 
-        def _set(col: int, text: str) -> QTableWidgetItem:
-            it = QTableWidgetItem(text)
+        def _set(col: int, txt: str) -> QTableWidgetItem:
+            it = QTableWidgetItem(txt)
             it.setTextAlignment(Qt.AlignVCenter | Qt.AlignLeft)
             it.setForeground(QBrush(QColor("#eaeaea")))
             self.table.setItem(row, col, it)
             return it
 
-        _set(0, ts)
-        _set(1, platform_s)
-        _set(2, nickname)
-        _set(3, typ_s)
-        _set(4, content)
-        _set(5, trigger_kw)
-        _set(6, "是" if collected else "否")
+        it_ts = _set(0, ts)
+        it_plat = _set(1, platform_s)
+        it_nick = _set(2, nickname)
+        it_typ = _set(3, typ_s)
+        it_txt = _set(4, content)
+        it_kw = _set(5, trigger_kw)
+        it_col = _set(6, "是" if collected else "否")
+
+        # 在 UserRole 存原始数据，避免 show/raw 来回转换
+        try:
+            it_ts.setData(Qt.UserRole, {
+                "ts": ts,
+                "platform_raw": platform,
+                "platform_show": platform_s,
+                "nickname": nickname,
+                "type": typ_s,
+                "reply_text": content,
+                "trigger_kw": trigger_kw,
+                "is_reply": bool(is_reply),
+                "collect_key": key_for_collect,
+            })
+        except Exception:
+            pass
+
+        # 维护索引：key -> row（便于 O(1) 刷新入库状态）
+        self._row_by_collect_key[key_for_collect] = row
+
+        # 操作列：每条“回复”显示入库按钮
+        opw = QWidget()
+        opl = QHBoxLayout(opw)
+        opl.setContentsMargins(0, 0, 0, 0)
+        opl.setSpacing(6)
+
+        if is_reply:
+            btn = QPushButton("入库")
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setStyleSheet(self._btn_style("primary"))
+            btn.setEnabled(not collected)
+
+            # 用 default args 固定当前行数据
+            btn.clicked.connect(lambda _=False, _ts=ts, _plat_raw=platform, _plat_show=platform_s,
+                                       _nick=nickname, _txt=content, _kw=trigger_kw:
+                                self._collect_one_reply(_ts, _plat_raw, _plat_show, _nick, _txt, _kw))
+            opl.addWidget(btn)
+        else:
+            lb = QLabel("—")
+            lb.setStyleSheet("color:rgba(255,255,255,0.35);")
+            opl.addWidget(lb)
+
+        opl.addStretch(1)
+        self.table.setCellWidget(row, 7, opw)
 
         # 行样式：回复行更深一点底色
         if is_reply:
-            for c in range(0, 7):
+            for c in range(0, 7):  # 0..6 是 item 列
                 it = self.table.item(row, c)
                 if it:
                     it.setBackground(QBrush(QColor(0, 102, 204, 140)))
@@ -513,44 +567,95 @@ class CommentManagerPage(QWidget):
 
     def _refresh_collected_cells(self, ts: str, platform_raw: str, nickname: str, reply_text: str):
         key = self._make_collect_key(ts, platform_raw, nickname, reply_text)
-        # 全表扫描（行数一般不多，足够）
-        for r in range(self.table.rowCount()):
-            ts0 = self.table.item(r, 0).text() if self.table.item(r, 0) else ""
-            plat_show = self.table.item(r, 1).text() if self.table.item(r, 1) else ""
-            nick0 = self.table.item(r, 2).text() if self.table.item(r, 2) else ""
-            txt0 = self.table.item(r, 4).text() if self.table.item(r, 4) else ""
+        r = self._row_by_collect_key.get(key, None)
+        if r is None:
+            return
 
-            plat_raw = "douyin" if plat_show == "抖音" else ("wx_channels" if plat_show == "视频号" else plat_show)
-            if self._make_collect_key(ts0, plat_raw, nick0, txt0) == key:
-                if self.table.item(r, 6):
-                    self.table.item(r, 6).setText("是")
-                w = self.table.cellWidget(r, 7)
-                if w:
-                    btns = w.findChildren(QPushButton)
-                    for b in btns:
-                        b.setEnabled(False)
-                break
+        try:
+            if self.table.item(r, 6):
+                self.table.item(r, 6).setText("是")
+        except Exception:
+            pass
+
+        try:
+            w = self.table.cellWidget(r, 7)
+            if w:
+                for b in w.findChildren(QPushButton):
+                    b.setEnabled(False)
+        except Exception:
+            pass
 
     def _collect_selected_reply(self):
         r = self.table.currentRow()
         if r < 0:
             self._alert_dialog("提示", "请先选择一条【回复】记录。")
             return
-        typ = self.table.item(r, 3).text() if self.table.item(r, 3) else ""
+
+        data = None
+        try:
+            it0 = self.table.item(r, 0)
+            data = it0.data(Qt.UserRole) if it0 else None
+        except Exception:
+            data = None
+
+        typ = ""
+        collected = "否"
+        try:
+            typ = self.table.item(r, 3).text() if self.table.item(r, 3) else ""
+            collected = self.table.item(r, 6).text() if self.table.item(r, 6) else "否"
+        except Exception:
+            pass
+
         if typ != "回复":
             self._alert_dialog("提示", "当前选择不是【回复】记录。")
             return
+        if collected == "是":
+            return
 
-        ts = self.table.item(r, 0).text() if self.table.item(r, 0) else _now_ts()
-        plat_show = self.table.item(r, 1).text() if self.table.item(r, 1) else ""
-        nickname = self.table.item(r, 2).text() if self.table.item(r, 2) else "未知用户"
-        reply_text = self.table.item(r, 4).text() if self.table.item(r, 4) else ""
-        trigger_kw = self.table.item(r, 5).text() if self.table.item(r, 5) else ""
+        if isinstance(data, dict):
+            ts = _safe_str(data.get("ts")) or _now_ts()
+            plat_raw = _safe_str(data.get("platform_raw"))
+            plat_show = _safe_str(data.get("platform_show"))
+            nickname = _safe_str(data.get("nickname")) or "未知用户"
+            reply_text = _safe_str(data.get("reply_text"))
+            trigger_kw = _safe_str(data.get("trigger_kw"))
+        else:
+            ts = self.table.item(r, 0).text() if self.table.item(r, 0) else _now_ts()
+            plat_show = self.table.item(r, 1).text() if self.table.item(r, 1) else ""
+            nickname = self.table.item(r, 2).text() if self.table.item(r, 2) else "未知用户"
+            reply_text = self.table.item(r, 4).text() if self.table.item(r, 4) else ""
+            trigger_kw = self.table.item(r, 5).text() if self.table.item(r, 5) else ""
+            plat_raw = "douyin" if plat_show == "抖音" else ("wx_channels" if plat_show == "视频号" else plat_show)
 
-        plat_raw = "douyin" if plat_show == "抖音" else ("wx_channels" if plat_show == "视频号" else plat_show)
         self._collect_one_reply(ts, plat_raw, plat_show, nickname, reply_text, trigger_kw)
 
     def _on_selection_changed(self):
+        r = self.table.currentRow()
+        if r < 0:
+            self.lb_sel.setText("未选择任何行")
+            try:
+                self.btn_collect_selected.setEnabled(False)
+            except Exception:
+                pass
+            return
+
+        try:
+            ts = self.table.item(r, 0).text() if self.table.item(r, 0) else ""
+            plat = self.table.item(r, 1).text() if self.table.item(r, 1) else ""
+            nick = self.table.item(r, 2).text() if self.table.item(r, 2) else ""
+            typ = self.table.item(r, 3).text() if self.table.item(r, 3) else ""
+            collected = self.table.item(r, 6).text() if self.table.item(r, 6) else "否"
+        except Exception:
+            ts, plat, nick, typ, collected = "", "", "", "", "否"
+
+        self.lb_sel.setText(f"已选：{ts} | {plat} | {nick} | {typ}")
+        try:
+            self.btn_collect_selected.setEnabled(typ == "回复" and collected != "是")
+        except Exception:
+            pass
+
+    # ---------- Clear / dialogs ----------
+    def _on_clear_log(self):
         r = self.table.currentRow()
         if r < 0:
             self.lb_sel.setText("未选择任何行")
@@ -632,134 +737,144 @@ class CommentManagerPage(QWidget):
         except Exception:
             pass
 
+    # ---------- Keywords realtime refresh ----------
+    def _notify_keyword_page_refresh(self):
+        """尽量让“关键词设置”页面立刻刷新到最新 reply（无须重启）。
 
-def _notify_keyword_page_refresh(self):
-    """尽量让“关键词设置”页面立刻刷新到最新 reply（无须重启）。
+        优先：调用 main.refresh_keywords_page()（如果你在 main_window 里提供了这个稳定入口）
+        兜底：在 stack 中定位关键词页 -> 调用其常见刷新方法名
+        最终兜底：重建 KeywordPage widget
+        """
+        main = self.ctx.get("main")
+        if not main:
+            return
 
-    优先：调用页面已有的 reload/refresh/load 方法；
-    兜底：直接重建“关键词设置”页面 widget（最稳）。
-    """
-    main = self.ctx.get("main")
-    if not main:
-        return
-
-    stack = getattr(main, "stack", None)
-    pages = getattr(main, "pages", None)
-    if not stack:
-        return
-
-    # 1) 先定位“关键词设置”页的 index（优先按 PageSpec.name）
-    idx = None
-    try:
-        if pages:
-            for i, p in enumerate(pages):
-                if getattr(p, "name", None) == "关键词设置":
-                    idx = i
-                    break
-    except Exception:
-        idx = None
-
-    target = None
-    if idx is not None:
-        try:
-            target = stack.widget(idx)
-        except Exception:
-            target = None
-
-    # 2) 兜底：按 class 名称/对象名查找
-    if target is None:
-        try:
-            for i in range(stack.count()):
-                w = stack.widget(i)
-                if not w:
-                    continue
-                cn = w.__class__.__name__
-                if cn in ("KeywordPage", "KeywordsPage"):
-                    target = w
-                    idx = i
-                    break
-                on = getattr(w, "objectName", None)
-                if callable(on) and (on() in ("KeywordPage", "page_keywords", "Keywords")):
-                    target = w
-                    idx = i
-                    break
-        except Exception:
-            target = None
-
-    if target is None:
-        return
-
-    # 3) 尝试调用目标页面的刷新方法（无参）
-    try:
-        preferred = [
-            "reload_keywords", "reload", "reload_all", "refresh", "refresh_ui",
-            "_reload_all", "_reload", "_load_from_runtime", "load_from_runtime",
-            "refresh_keywords", "_refresh", "_refresh_list", "update_ui", "rebuild",
-        ]
-
-        tried = set()
-        for name in preferred:
-            fn = getattr(target, name, None)
-            if callable(fn):
-                tried.add(name)
-                try:
-                    fn()
-                    return
-                except Exception:
-                    pass
-
-        # 再做一次“自动发现”：所有包含 load/refresh/reload 的无参方法都试一遍
-        import inspect as _inspect
-        for name in dir(target):
-            lname = name.lower()
-            if not any(k in lname for k in ("reload", "refresh", "load", "rebuild", "sync")):
-                continue
-            if name in tried:
-                continue
-            fn = getattr(target, name, None)
-            if not callable(fn):
-                continue
-            try:
-                sig = _inspect.signature(fn)
-                params = list(sig.parameters.values())
-                req = [p for p in params[1:] if
-                       p.default is p.empty and p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)]
-                if req:
-                    continue
-            except Exception:
-                pass
+        # 0) 优先使用明确入口（推荐你在 main_window.py 里实现）
+        fn = getattr(main, "refresh_keywords_page", None)
+        if callable(fn):
             try:
                 fn()
                 return
             except Exception:
-                continue
-    except Exception:
-        pass
+                pass
 
-    # 4) 最终兜底：直接重建“关键词设置”页面（确保 UI 重新读取最新数据）
-    try:
-        if idx is None:
+        stack = getattr(main, "stack", None)
+        pages = getattr(main, "pages", None)
+        if not stack:
             return
-        cur = stack.currentIndex()
-        old = stack.widget(idx)
-        if old:
-            stack.removeWidget(old)
-            old.setParent(None)
-            old.deleteLater()
 
-        from ui.pages.page_keywords import KeywordPage  # type: ignore
-        neww = KeywordPage(self.ctx)
-        stack.insertWidget(idx, neww)
-
+        # 1) 先定位“关键词设置”页的 index（优先按 PageSpec.name）
+        idx = None
         try:
-            stack.setCurrentIndex(cur)
+            if pages:
+                for i, p in enumerate(pages):
+                    if getattr(p, "name", None) == "关键词设置":
+                        idx = i
+                        break
+        except Exception:
+            idx = None
+
+        target = None
+        if idx is not None:
+            try:
+                target = stack.widget(idx)
+            except Exception:
+                target = None
+
+        # 2) 兜底：按 class 名称/对象名查找
+        if target is None:
+            try:
+                for i in range(stack.count()):
+                    w = stack.widget(i)
+                    if not w:
+                        continue
+                    cn = w.__class__.__name__
+                    if cn in ("KeywordPage", "KeywordsPage"):
+                        target = w
+                        idx = i
+                        break
+                    on = getattr(w, "objectName", None)
+                    if callable(on) and (on() in ("KeywordPage", "page_keywords", "Keywords")):
+                        target = w
+                        idx = i
+                        break
+            except Exception:
+                target = None
+
+        if target is None:
+            return
+
+        # 3) 尝试调用目标页面的刷新方法（无参）
+        try:
+            preferred = [
+                "reload_keywords", "reload", "reload_all", "refresh", "refresh_ui",
+                "_reload_all", "_reload", "_load_from_runtime", "load_from_runtime",
+                "refresh_keywords", "_refresh", "_refresh_list", "update_ui", "rebuild",
+            ]
+
+            tried = set()
+            for name in preferred:
+                fn2 = getattr(target, name, None)
+                if callable(fn2):
+                    tried.add(name)
+                    try:
+                        fn2()
+                        return
+                    except Exception:
+                        pass
+
+            # 自动发现：包含 load/refresh/reload 的无参方法
+            import inspect as _inspect
+            for name in dir(target):
+                lname = name.lower()
+                if not any(k in lname for k in ("reload", "refresh", "load", "rebuild", "sync")):
+                    continue
+                if name in tried:
+                    continue
+                fn2 = getattr(target, name, None)
+                if not callable(fn2):
+                    continue
+                try:
+                    sig = _inspect.signature(fn2)
+                    params = list(sig.parameters.values())
+                    req = [p for p in params[1:] if p.default is p.empty and p.kind in
+                           (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)]
+                    if req:
+                        continue
+                except Exception:
+                    pass
+                try:
+                    fn2()
+                    return
+                except Exception:
+                    continue
         except Exception:
             pass
-    except Exception:
+
+        # 4) 最终兜底：直接重建“关键词设置”页面（确保 UI 重新读取最新数据）
         try:
-            target.update()
+            if idx is None:
+                return
+            cur = stack.currentIndex()
+            old = stack.widget(idx)
+            if old:
+                stack.removeWidget(old)
+                old.setParent(None)
+                old.deleteLater()
+
+            from ui.pages.page_keywords import KeywordPage  # type: ignore
+            neww = KeywordPage(self.ctx)
+            stack.insertWidget(idx, neww)
+
+            try:
+                stack.setCurrentIndex(cur)
+            except Exception:
+                pass
         except Exception:
-            pass
+            try:
+                target.update()
+            except Exception:
+                pass
 
     # ---------- Collect to keywords.py ----------
     def _collect_to_keywords_py(self, prefix: str, reply_text: str):

@@ -31,7 +31,7 @@ def force_check_update_and_exit_if_needed():
 
     box = QMessageBox()
     box.setWindowTitle("必须更新")
-    box.setIcon(confirm_dialog())
+    box.setIcon(QMessageBox.warning())
     box.setText(msg)
     box.setStandardButtons(QMessageBox.Ok)
     box.exec()
