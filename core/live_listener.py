@@ -581,14 +581,16 @@ class LiveListener:
     # ===== 主循环（你原版不动）=====
     def run(self, tick: Callable[[], None]):
         with sync_playwright() as p:
-            browser = p.chromium.launch(
+
+            user_data_dir = os.path.join(os.getcwd(), "wx_user_data")  # 建议放到 app 数据目录更好
+            context = p.chromium.launch_persistent_context(
+                user_data_dir=user_data_dir,
                 headless=False,
                 args=["--start-maximized", "--disable-blink-features=AutomationControlled"],
+                no_viewport=True,
             )
-
-            context = self._create_context(browser)
             self._context = context
-            page = context.new_page()
+            page = context.pages[0] if context.pages else context.new_page()
 
             page.on("request", self._handle_request)
             page.on("response", self._handle_response)

@@ -11,7 +11,11 @@ venv/
 env/
 
 
+keywords_audio/
+other_audio/
 index-tts-main/
+protected_src/
+wx_user_data/
 
 # IDE
 .idea/
