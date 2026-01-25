@@ -1301,3 +1301,29 @@ class AudioDispatcher:
             sd.stop()
         except Exception:
             pass
+
+def play_next(self):
+    """跳过当前音频，立即播放队列中的下一条（不把当前音频回队列）。"""
+    # 这个功能主要用于“在播状态下”点一下直接跳到下一条
+    try:
+        # 如果暂停中，先恢复（否则 stop_now 后可能还在 paused 状态）
+        if bool(getattr(self, "paused", False)):
+            self.set_paused(False)
+    except Exception:
+        pass
+
+    # 如果当前播放的是轮播，跳过时不再恢复到同一条
+    try:
+        with self._lock:
+            if bool(getattr(self, "current_playing", False)) and getattr(self, "current_name", None) == PLAY_RANDOM:
+                self.resume_after_high = None
+    except Exception:
+        pass
+
+    # 强制停止当前，调度循环会自然选下一条播放
+    if bool(getattr(self, "current_playing", False)):
+        print("⏭ 跳到下一条音频")
+        self.stop_now()
+    else:
+        # 空闲时不用做任何事（下一条会由调度循环自然取队列）
+        print("⏭ 当前未在播放，等待队列自动播放下一条")

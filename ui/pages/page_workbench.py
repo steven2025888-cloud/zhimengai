@@ -2,6 +2,8 @@
 import sys
 import threading
 import functools
+import time
+import math
 
 
 
@@ -95,6 +97,7 @@ class WorkbenchPage(QWidget):
         self.btn_insert_audio = _mk_btn("📌 插播音频")
         self.btn_urgent_audio = _mk_btn("🚨 急插音频")
         self.btn_record_urgent = _mk_btn("🎙️ 录音急插")
+        self.btn_next_audio = _mk_btn("⏭ 下一条")
 
         # 初始按钮样式
         self._style_start_idle()
@@ -185,6 +188,7 @@ class WorkbenchPage(QWidget):
         insert_row.addWidget(self.btn_insert_audio)
         insert_row.addWidget(self.btn_urgent_audio)
         insert_row.addWidget(self.btn_record_urgent)
+        insert_row.addWidget(self.btn_next_audio)
         insert_row.addStretch(1)
         log_l.addLayout(insert_row)
 
@@ -223,6 +227,7 @@ class WorkbenchPage(QWidget):
         self.btn_insert_audio.clicked.connect(self.choose_insert_audio)
         self.btn_urgent_audio.clicked.connect(self.choose_urgent_audio)
         self.btn_record_urgent.clicked.connect(self.open_record_urgent_dialog)
+        self.btn_next_audio.clicked.connect(self.play_next_audio)
 
         self.btn_follow_like_interval.clicked.connect(self.set_follow_like_interval)
         self.sw_follow_audio.toggled.connect(self.toggle_follow_audio)
@@ -475,6 +480,30 @@ class WorkbenchPage(QWidget):
         except Exception as e:
             QMessageBox.critical(self, "暂停/播放失败", str(e))
 
+
+    def play_next_audio(self):
+        """跳过当前正在播放的音频，直接播放队列里的下一条。"""
+        disp = self._get_audio_dispatcher()
+        if not disp:
+            confirm_dialog(self, "提示", "请先点击【启动系统】后再使用【下一条】。")
+            return
+        try:
+            if hasattr(disp, "skip_current") and callable(getattr(disp, "skip_current")):
+                disp.skip_current()
+            elif hasattr(disp, "play_next") and callable(getattr(disp, "play_next")):
+                disp.play_next()
+            elif hasattr(disp, "stop_now") and callable(getattr(disp, "stop_now")):
+                disp.stop_now()
+            elif hasattr(disp, "stop_playback") and callable(getattr(disp, "stop_playback")):
+                disp.stop_playback()
+            else:
+                confirm_dialog(self, "不支持", "当前版本的音频调度器没有“下一条/跳过”能力，请更新 audio_dispatcher.py。")
+                return
+            print("⏭ 已切到下一条音频")
+        except Exception as e:
+            QMessageBox.critical(self, "下一条失败", str(e))
+
+
     def open_doc(self):
         try:
             from config import DOC_URL
@@ -547,8 +576,6 @@ class WorkbenchPage(QWidget):
             confirm_dialog(self, "提示", "请先点击【启动系统】后再使用录音急插。")
             return
 
-        import time as _time
-        import math as _math
         from PySide6.QtCore import QTimer, QSize, QEasingCurve, QPropertyAnimation
         from PySide6.QtGui import QPainter, QPen, QColor, QFont
 
@@ -607,7 +634,7 @@ class WorkbenchPage(QWidget):
                 out = []
                 for v in bars:
                     vv = v * self._gain
-                    vv = _math.tanh(vv * 1.6)
+                    vv = math.tanh(vv * 1.6)
                     out.append(vv)
 
                 self._bars = out
@@ -789,7 +816,7 @@ class WorkbenchPage(QWidget):
                 wave.set_wave(wf)
 
             if start_ts["t"] is not None:
-                sec = max(0, int(_time.time() - start_ts["t"]))
+                sec = max(0, int(time.time() - start_ts["t"]))
                 mm = sec // 60
                 ss = sec % 60
                 lab_time.setText(f"{mm:02d}:{ss:02d}")
@@ -810,7 +837,7 @@ class WorkbenchPage(QWidget):
                     confirm_dialog(dlg, "录音失败", "无法启动录音：请检查麦克风/声卡权限。")
                     return
 
-                start_ts["t"] = _time.time()
+                start_ts["t"] = time.time()
                 lab_state.setText("状态：录音中…")
                 btn_start.setEnabled(False)
                 btn_stop.setEnabled(True)
@@ -835,9 +862,6 @@ class WorkbenchPage(QWidget):
 
     def _make_auto_card(self):
         auto_card, auto_body = self._make_card("自动化控制")
-
-
-
         auto_body.addWidget(self._switch_row("⏱ 随机报时", self.sw_report))
         auto_body.addWidget(self._button_row("⏱ 报时间隔", self.btn_report_interval))
         auto_body.addWidget(self._switch_row("💬 关键词文本回复", self.sw_auto_reply))

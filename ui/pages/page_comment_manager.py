@@ -1,12 +1,12 @@
 # ui/pages/page_comment_manager.py
 from __future__ import annotations
 
+import ast
 import json
 import os
 import pathlib
-import time
-import ast
 import pprint
+import time
 import inspect
 from typing import Any, Dict, Optional, Tuple
 
@@ -15,7 +15,7 @@ from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QFrame, QSpacerItem, QSizePolicy, QTableWidget, QTableWidgetItem,
-    QHeaderView, QCheckBox, QAbstractItemView
+    QHeaderView, QCheckBox, QAbstractItemView, QComboBox
 )
 
 from core.state import app_state
@@ -41,10 +41,20 @@ class CommentManagerPage(QWidget):
     评论管理：
     - 开关：记录弹幕、记录回复（只保存开关到 runtime_state.json）
     - 实时显示：时间/平台/用户/类型/内容/触发关键词/入库状态
-    - 每条【回复】支持“入库”按钮（confirm_dialog确认后入库）
+    - 回复支持“入库”（confirm_dialog确认后入库）
     - 入库状态不写 runtime_state.json：写在同目录 sidecar 索引文件
     - 清空日志：清空 jsonl + 清空 sidecar 索引
+
+    额外增强：
+    - 筛选：全部 / 仅评论 / 仅回复
+    - 修复：重复 _on_clear_log、越界列索引、无效的第8列引用等
     """
+
+    FILTER_ALL = 0
+    FILTER_COMMENT = 1
+    FILTER_REPLY = 2
+
+    MAX_LINES_PER_TICK = 300
 
     def __init__(self, ctx: Dict[str, Any]):
         super().__init__()
@@ -61,6 +71,9 @@ class CommentManagerPage(QWidget):
         self._row_by_collect_key: Dict[str, int] = {}
         self._last_pos = 0
         self._timer: Optional[QTimer] = None
+
+        # 当前筛选模式
+        self._filter_mode = self.FILTER_ALL
 
         # 只保留两个开关：记录评论/记录回复（不保留全局“回复入库开关”）
         try:
@@ -125,11 +138,21 @@ class CommentManagerPage(QWidget):
 
         self._toggle_rows: Dict[str, Tuple[QLabel, QPushButton]] = {}
 
-        self._add_toggle_row(tl, "记录弹幕评论", "记录所有用户发出的弹幕内容（抖音/视频号）。",
-                             state_attr="enable_comment_record", runtime_key="enable_comment_record")
+        self._add_toggle_row(
+            tl,
+            "记录弹幕评论",
+            "记录所有用户发出的弹幕内容（抖音/视频号）。",
+            state_attr="enable_comment_record",
+            runtime_key="enable_comment_record",
+        )
 
-        self._add_toggle_row(tl, "记录自动回复", "记录本软件发出的弹幕回复（仅记录发送成功的回复）。",
-                             state_attr="enable_reply_record", runtime_key="enable_reply_record")
+        self._add_toggle_row(
+            tl,
+            "记录自动回复",
+            "记录本软件发出的弹幕回复（仅记录发送成功的回复）。",
+            state_attr="enable_reply_record",
+            runtime_key="enable_reply_record",
+        )
 
         root.addWidget(toggles)
 
@@ -149,6 +172,25 @@ class CommentManagerPage(QWidget):
 
         topbar.addStretch(1)
 
+        # ✅ 新增：筛选（全部/仅评论/仅回复）
+        lb_filter = QLabel("筛选：")
+        lb_filter.setStyleSheet("color:rgba(255,255,255,0.78);font-weight:800;")
+        topbar.addWidget(lb_filter)
+
+        self.cmb_filter = QComboBox()
+        self.cmb_filter.addItems(["全部", "仅评论", "仅回复"])
+        self.cmb_filter.setCursor(Qt.PointingHandCursor)
+        self.cmb_filter.setFixedWidth(110)
+        self.cmb_filter.setStyleSheet(
+            "QComboBox{padding:6px 10px;border-radius:10px;background:rgba(255,255,255,0.10);"
+            "color:#eaeaea;font-weight:900;border:1px solid rgba(255,255,255,0.10);}"
+            "QComboBox:hover{background:rgba(255,255,255,0.14);}"
+            "QComboBox::drop-down{border:none;width:18px;}"
+            "QAbstractItemView{background:#2a2a2a;color:#eaeaea;selection-background-color:rgba(70,130,180,0.35);}"
+        )
+        self.cmb_filter.currentIndexChanged.connect(self._on_filter_changed)
+        topbar.addWidget(self.cmb_filter)
+
         self.chk_autoscroll = QCheckBox("自动滚动到底部")
         self.chk_autoscroll.setChecked(True)
         self.chk_autoscroll.setStyleSheet("color:rgba(255,255,255,0.78);font-weight:800;")
@@ -162,7 +204,7 @@ class CommentManagerPage(QWidget):
 
         tcl.addLayout(topbar)
 
-        # 8列：最后一列操作
+        # 7列：时间/平台/用户/类型/内容/触发关键词/已入库
         self.table = QTableWidget(0, 7)
         self.table.setHorizontalHeaderLabels(["时间", "平台", "用户", "类型", "内容", "触发关键词", "已入库"])
         self.table.verticalHeader().setVisible(False)
@@ -172,9 +214,10 @@ class CommentManagerPage(QWidget):
         self.table.setWordWrap(True)
         self.table.setTextElideMode(Qt.ElideRight)
 
-        # 深色主题：让“回复”不再白到看不清（统一高对比，回复行再加底色区分）
+        # 深色主题：统一高对比，回复行加底色区分
         self.table.setStyleSheet(
-            "QTableWidget{background:rgba(0,0,0,0.16);alternate-background-color:rgba(255,255,255,0.04);color:#eaeaea;border:none;gridline-color:rgba(255,255,255,0.08);}"
+            "QTableWidget{background:rgba(0,0,0,0.16);alternate-background-color:rgba(255,255,255,0.04);"
+            "color:#eaeaea;border:none;gridline-color:rgba(255,255,255,0.08);}"
             "QTableWidget::item{padding:6px;background:transparent;}"
             "QTableWidget::item:selected{background:rgba(70,130,180,0.25);}"
             "QHeaderView::section{background:rgba(255,255,255,0.10);color:#eaeaea;"
@@ -183,7 +226,6 @@ class CommentManagerPage(QWidget):
 
         hh = self.table.horizontalHeader()
         hh.setStretchLastSection(False)
-        # ✅ 可拖动列宽（你说“加一个拖动”）
         hh.setSectionResizeMode(QHeaderView.Interactive)
         hh.setSectionResizeMode(0, QHeaderView.ResizeToContents)
         hh.setSectionResizeMode(1, QHeaderView.ResizeToContents)
@@ -193,15 +235,16 @@ class CommentManagerPage(QWidget):
         hh.setSectionResizeMode(5, QHeaderView.ResizeToContents)
         hh.setSectionResizeMode(6, QHeaderView.ResizeToContents)
 
-        hh.setSectionResizeMode(7, QHeaderView.ResizeToContents)
         self.table.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
         self.table.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
 
         tcl.addWidget(self.table, 1)
 
-        # ---- 底部固定工具条：入库选中（解决“按钮看不到”时还能操作）----
+        # ---- 底部固定工具条：入库选中 ----
         bottom = QFrame()
-        bottom.setStyleSheet("background:rgba(0,0,0,0.18);border:1px solid rgba(255,255,255,0.08);border-radius:12px;")
+        bottom.setStyleSheet(
+            "background:rgba(0,0,0,0.18);border:1px solid rgba(255,255,255,0.08);border-radius:12px;"
+        )
         bl = QHBoxLayout(bottom)
         bl.setContentsMargins(10, 8, 10, 8)
         bl.setSpacing(10)
@@ -217,7 +260,6 @@ class CommentManagerPage(QWidget):
         bl.addWidget(self.btn_collect_selected, 0)
 
         tcl.addWidget(bottom)
-
         root.addWidget(table_card, 1)
         root.addItem(QSpacerItem(10, 10, QSizePolicy.Minimum, QSizePolicy.Expanding))
 
@@ -232,24 +274,28 @@ class CommentManagerPage(QWidget):
     def _btn_style(self, kind: str) -> str:
         if kind == "danger":
             return (
-                "QPushButton{padding:8px 12px;border-radius:10px;background:rgba(255,80,80,0.22);font-weight:900;color:#ffd9d9;}"
+                "QPushButton{padding:8px 12px;border-radius:10px;background:rgba(255,80,80,0.22);"
+                "font-weight:900;color:#ffd9d9;}"
                 "QPushButton:hover{background:rgba(255,80,80,0.34);}"
             )
         if kind == "primary":
             return (
-                "QPushButton{padding:8px 12px;border-radius:10px;background:rgba(70,130,180,0.28);font-weight:900;color:#e8f2ff;}"
+                "QPushButton{padding:8px 12px;border-radius:10px;background:rgba(70,130,180,0.28);"
+                "font-weight:900;color:#e8f2ff;}"
                 "QPushButton:hover{background:rgba(70,130,180,0.40);}"
             )
         # ghost
         return (
-            "QPushButton{padding:8px 12px;border-radius:10px;background:rgba(255,255,255,0.10);font-weight:900;color:#eaeaea;}"
+            "QPushButton{padding:8px 12px;border-radius:10px;background:rgba(255,255,255,0.10);"
+            "font-weight:900;color:#eaeaea;}"
             "QPushButton:hover{background:rgba(255,255,255,0.16);}"
         )
 
     def _add_toggle_row(self, parent_layout: QVBoxLayout, title: str, tip: str, state_attr: str, runtime_key: str):
         row = QFrame()
         row.setStyleSheet(
-            "background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:12px;")
+            "background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:12px;"
+        )
         rl = QHBoxLayout(row)
         rl.setContentsMargins(12, 10, 12, 10)
         rl.setSpacing(10)
@@ -320,6 +366,47 @@ class CommentManagerPage(QWidget):
         except Exception:
             pass
 
+    # ---------- Filter ----------
+    def _on_filter_changed(self, idx: int):
+        if idx == 1:
+            self._filter_mode = self.FILTER_COMMENT
+        elif idx == 2:
+            self._filter_mode = self.FILTER_REPLY
+        else:
+            self._filter_mode = self.FILTER_ALL
+        self._apply_filter_to_all_rows()
+
+    def _apply_filter_to_all_rows(self):
+        rc = self.table.rowCount()
+        for r in range(rc):
+            self._apply_filter_to_row(r)
+
+    def _apply_filter_to_row(self, row: int):
+        # 通过 UserRole 数据判断 is_reply
+        is_reply = False
+        try:
+            it0 = self.table.item(row, 0)
+            data = it0.data(Qt.UserRole) if it0 else None
+            if isinstance(data, dict):
+                is_reply = bool(data.get("is_reply", False))
+            else:
+                # fallback：看“类型”列文本
+                typ = self.table.item(row, 3).text() if self.table.item(row, 3) else ""
+                is_reply = (typ == "回复")
+        except Exception:
+            is_reply = False
+
+        show = True
+        if self._filter_mode == self.FILTER_COMMENT:
+            show = (not is_reply)
+        elif self._filter_mode == self.FILTER_REPLY:
+            show = is_reply
+
+        try:
+            self.table.setRowHidden(row, not show)
+        except Exception:
+            pass
+
     # ---------- Timer / Poll ----------
     def _start_timer(self):
         if self._timer is None:
@@ -353,15 +440,15 @@ class CommentManagerPage(QWidget):
             if not load_all and self._last_pos > size:
                 self._last_pos = 0
 
-            max_lines = 300  # 每次 tick 最多处理多少行，避免 UI 卡顿
             added = 0
+            self.table.setUpdatesEnabled(False)
 
             with open(path, "r", encoding="utf-8") as f:
                 if not load_all:
                     f.seek(self._last_pos)
 
                 while True:
-                    if added >= max_lines:
+                    if added >= self.MAX_LINES_PER_TICK:
                         break
                     line = f.readline()
                     if not line:
@@ -378,14 +465,19 @@ class CommentManagerPage(QWidget):
 
                 self._last_pos = f.tell()
 
+            self.table.setUpdatesEnabled(True)
+
             if added and self.chk_autoscroll.isChecked():
+                # 筛选模式下不强制滚动到隐藏行，直接滚到底部即可
                 self.table.scrollToBottom()
 
         except Exception:
-            pass
+            try:
+                self.table.setUpdatesEnabled(True)
+            except Exception:
+                pass
 
     # ---------- Row append / style ----------
-
     def _append_event_row(self, evt: Dict[str, Any]):
         ts = _safe_str(evt.get("ts")) or _now_ts()
         platform = _safe_str(evt.get("platform"))
@@ -420,12 +512,12 @@ class CommentManagerPage(QWidget):
             return it
 
         it_ts = _set(0, ts)
-        it_plat = _set(1, platform_s)
-        it_nick = _set(2, nickname)
-        it_typ = _set(3, typ_s)
-        it_txt = _set(4, content)
-        it_kw = _set(5, trigger_kw)
-        it_col = _set(6, "是" if collected else "否")
+        _set(1, platform_s)
+        _set(2, nickname)
+        _set(3, typ_s)
+        _set(4, content)
+        _set(5, trigger_kw)
+        _set(6, "是" if collected else "否")
 
         # 在 UserRole 存原始数据，避免 show/raw 来回转换
         try:
@@ -445,12 +537,16 @@ class CommentManagerPage(QWidget):
 
         # 维护索引：key -> row（便于 O(1) 刷新入库状态）
         self._row_by_collect_key[key_for_collect] = row
+
         # 行样式：回复行更深一点底色
         if is_reply:
-            for c in range(0, 7):  # 0..6 是 item 列
+            for c in range(0, 7):  # 0..6
                 it = self.table.item(row, c)
                 if it:
                     it.setBackground(QBrush(QColor(0, 102, 204, 140)))
+
+        # ✅ 新增：按当前筛选立即决定是否隐藏
+        self._apply_filter_to_row(row)
 
     # ---------- Collect logic ----------
     def _infer_trigger_keyword(self, nickname: str) -> str:
@@ -508,19 +604,26 @@ class CommentManagerPage(QWidget):
         except Exception:
             pass
 
-    def _collect_one_reply(self, ts: str, platform_raw: str, platform_show: str, nickname: str, reply_text: str,
-                           trigger_kw: str):
+    def _collect_one_reply(
+        self,
+        ts: str,
+        platform_raw: str,
+        platform_show: str,
+        nickname: str,
+        reply_text: str,
+        trigger_kw: str
+    ):
         # 再兜底一次关键词
         trigger_kw = (trigger_kw or "").strip() or self._infer_trigger_keyword(nickname)
         if not trigger_kw:
-            self._alert_dialog("无法入库",
-                               "该条回复缺少“触发关键词”，请确认抖音/视频号 listener 已写入 trigger_keyword。")
+            self._alert_dialog("无法入库", "该条回复缺少“触发关键词”，请确认 listener 已写入 trigger_keyword。")
             return
 
         ok = confirm_dialog(
             self,
             title="确认入库",
-            text=f"确定将这条回复入库到关键词【{trigger_kw}】吗？\n\n平台：{platform_show}\n用户：{nickname}\n回复：{reply_text}")
+            text=f"确定将这条回复入库到关键词【{trigger_kw}】吗？\n\n平台：{platform_show}\n用户：{nickname}\n回复：{reply_text}"
+        )
         if not ok:
             return
 
@@ -544,18 +647,10 @@ class CommentManagerPage(QWidget):
         r = self._row_by_collect_key.get(key, None)
         if r is None:
             return
-
         try:
-            if self.table.item(r, 6):
-                self.table.item(r, 6).setText("是")
-        except Exception:
-            pass
-
-        try:
-            w = self.table.cellWidget(r, 7)
-            if w:
-                for b in w.findChildren(QPushButton):
-                    b.setEnabled(False)
+            it = self.table.item(r, 6)
+            if it:
+                it.setText("是")
         except Exception:
             pass
 
@@ -630,31 +725,11 @@ class CommentManagerPage(QWidget):
 
     # ---------- Clear / dialogs ----------
     def _on_clear_log(self):
-        r = self.table.currentRow()
-        if r < 0:
-            self.lb_sel.setText("未选择任何行")
-            try:
-                self.btn_collect_selected.setEnabled(False)
-            except Exception:
-                pass
-            return
-        ts = self.table.item(r, 0).text() if self.table.item(r, 0) else ""
-        plat = self.table.item(r, 1).text() if self.table.item(r, 1) else ""
-        nick = self.table.item(r, 2).text() if self.table.item(r, 2) else ""
-        typ = self.table.item(r, 3).text() if self.table.item(r, 3) else ""
-        collected = self.table.item(r, 6).text() if self.table.item(r, 6) else "否"
-        self.lb_sel.setText(f"已选：{ts} | {plat} | {nick} | {typ}")
-        try:
-            self.btn_collect_selected.setEnabled(typ == "回复" and collected != "是")
-        except Exception:
-            pass
-
-    # ---------- Clear / dialogs ----------
-    def _on_clear_log(self):
         ok = confirm_dialog(
             self,
             title="确认清空",
-            text="确定要清空所有评论/回复日志吗？（清空后无法恢复）")
+            text="确定要清空所有评论/回复日志吗？（清空后无法恢复）"
+        )
         if not ok:
             return
 
@@ -681,12 +756,12 @@ class CommentManagerPage(QWidget):
         try:
             import importlib
             import keywords  # type: ignore
-            # 更新模块内变量（如 QA_KEYWORDS / ZHULI_KEYWORDS）
+
             try:
                 setattr(keywords, var_name, mapping)
             except Exception:
                 pass
-            # 兼容：如果写的是 QA_KEYWORDS，也同步到其它常见变量名
+
             if var_name == "QA_KEYWORDS":
                 for k in ("qa_keywords", "QA_KEYWORDS", "keyword_rules", "keywords"):
                     try:
@@ -694,14 +769,13 @@ class CommentManagerPage(QWidget):
                             setattr(app_state, k, mapping)
                     except Exception:
                         pass
+
             try:
                 importlib.invalidate_caches()
             except Exception:
                 pass
         except Exception:
             pass
-        
-
 
     # ---------- Collect to keywords.py ----------
     def _collect_to_keywords_py(self, prefix: str, reply_text: str):
@@ -723,7 +797,7 @@ class CommentManagerPage(QWidget):
         return self._patch_keywords_file(kw_path, prefix, reply_text)
 
     def _patch_keywords_file(self, kw_path: str, prefix: str, reply_text: str):
-        """AST 解析 keywords.py，定位 QA_KEYWORDS / ZHULI_KEYWORDS 字典，把 reply_text 插入到对应 prefix 的 reply 列表。"""
+        """AST 解析 keywords.py，定位关键词字典，把 reply_text 插入到对应 prefix 的 reply 列表。"""
         try:
             code = pathlib.Path(kw_path).read_text(encoding="utf-8")
         except Exception as e:
@@ -754,7 +828,7 @@ class CommentManagerPage(QWidget):
                         continue
 
         if assign_node is None or var_name is None or mapping is None:
-            return False, "未能在 keywords.py 中找到可解析的 QA_KEYWORDS / ZHULI_KEYWORDS 字典"
+            return False, "未能在 keywords.py 中找到可解析的关键词字典（QA_KEYWORDS / ZHULI_KEYWORDS 等）"
 
         # 找到目标 cfg（优先按 cfg['prefix'] 匹配）
         target_cfg = None
@@ -782,11 +856,10 @@ class CommentManagerPage(QWidget):
             arr = arr[:200]
         target_cfg["reply"] = arr
 
-        # 回写（会重排该字典段落格式，但不影响运行）
         new_mapping_text = f"{var_name} = " + pprint.pformat(mapping, width=120, sort_dicts=False) + "\n"
 
         if not (hasattr(assign_node, "lineno") and hasattr(assign_node, "end_lineno")):
-            return False, "AST 不支持 end_lineno，无法安全回写（请升级 Python 版本 >= 3.8）"
+            return False, "AST 不支持 end_lineno，无法安全回写（请升级 Python >= 3.8）"
 
         lines = code.splitlines(True)
         start = assign_node.lineno - 1
