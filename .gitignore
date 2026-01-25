@@ -11,13 +11,7 @@ venv/
 env/
 
 
-keywords_audio/
-other_audio/
-index-tts-main/
-protected_src/
-wx_user_data/
-other_audio/
-ffmpeg/
+
 
 runtime_state.json
 
@@ -62,6 +56,14 @@ zhuli_audio/
 
 audio_temp/
 cache/
+
+keywords_audio/
+other_audio/
+index-tts-main/
+protected_src/
+wx_user_data/
+other_audio/
+ffmpeg/
 
 # 浏览器数据
 ms-playwright/
