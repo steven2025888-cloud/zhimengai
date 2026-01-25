@@ -56,10 +56,6 @@ def run():
 
     app.setWindowIcon(QIcon(resource_path("logo.ico")))
 
-    translator = QTranslator()
-    translator.load("qt_zh_CN", QLibraryInfo.path(QLibraryInfo.TranslationsPath))
-    app.installTranslator(translator)
-
     login = LicenseLoginDialog()
     if login.exec() != QDialog.Accepted:
         sys.exit(0)
@@ -68,7 +64,6 @@ def run():
     license_key = login.edit.text().strip()
 
     win = MainWindow(resource_path, expire_time=expire_time, license_key=license_key)
-
     win.show()
 
     qss_path = Path(resource_path("ui/style.qss"))

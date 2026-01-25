@@ -2,7 +2,7 @@
 import os
 import functools
 from dataclasses import dataclass
-from typing import Callable, Optional, List
+from typing import Callable, Optional, List, Dict
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
@@ -10,15 +10,18 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QIcon
+
 from core.runtime_state import load_runtime_state
 from core.state import app_state
 from config import AUDIO_BASE_DIR, ZHULI_AUDIO_DIR, other_gz_audio, other_dz_audio
+
 from ui.pages.page_script_rewrite import ScriptRewritePage
 from ui.pages.page_comment_manager import CommentManagerPage
 from ui.pages.page_public_screen import PublicScreenPage
 
 
 print = functools.partial(print, flush=True)
+
 
 def _safe_mkdir(p: str) -> str:
     p = str(p or "").strip()
@@ -101,6 +104,7 @@ def bootstrap_runtime_into_app_state():
         except Exception:
             pass
 
+
 def save_runtime_flag(key: str, value):
     from core.runtime_state import load_runtime_state, save_runtime_state
     state = load_runtime_state() or {}
@@ -122,6 +126,7 @@ class MainWindow(QWidget):
     def __init__(self, resource_path_func, expire_time: Optional[str] = None, license_key: str = ""):
         super().__init__()
 
+        # ✅ 先灌 runtime，避免 UI 初始化覆盖目录等
         bootstrap_runtime_into_app_state()
 
         self.setObjectName("MainWindow")
@@ -133,82 +138,99 @@ class MainWindow(QWidget):
         self.setWindowTitle("织梦AI直播工具")
         self.setWindowIcon(QIcon(self.resource_path("logo.ico")))
 
-        # ===== 外层：背景容器（只改它的背景色）=====
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.setSpacing(0)
+        # ✅ 初始化时尽量减少闪烁（可选，但建议保留）
+        self.setUpdatesEnabled(False)
+        try:
+            # ===== 外层：背景容器（只改它的背景色）=====
+            outer = QVBoxLayout(self)
+            outer.setContentsMargins(0, 0, 0, 0)
+            outer.setSpacing(0)
 
-        bg = QWidget()
-        bg.setObjectName("AppBackground")
-        bg.setAttribute(Qt.WA_StyledBackground, True)  # ✅关键：让QSS背景生效
-        outer.addWidget(bg, 1)
+            bg = QWidget()
+            bg.setObjectName("AppBackground")
+            bg.setAttribute(Qt.WA_StyledBackground, True)  # ✅关键：让QSS背景生效
+            outer.addWidget(bg, 1)
 
-        # ===== 内层：左右两栏容器，放在 bg 里面 =====
-        root = QHBoxLayout(bg)
-        root.setContentsMargins(5, 10, 5, 10)
-        root.setSpacing(5)
+            # ===== 内层：左右两栏容器，放在 bg 里面 =====
+            root = QHBoxLayout(bg)
+            root.setContentsMargins(5, 10, 5, 10)
+            root.setSpacing(5)
 
-        # ===== 左侧容器 =====
-        left = QWidget()
-        left.setObjectName("LeftPane")
-        left.setAttribute(Qt.WA_StyledBackground, True)  # ✅关键
-        left_l = QVBoxLayout(left)
-        left_l.setContentsMargins(0, 0, 0, 0)
-        left_l.setSpacing(0)
-        root.addWidget(left)
+            # ===== 左侧容器 =====
+            left = QWidget()
+            left.setObjectName("LeftPane")
+            left.setAttribute(Qt.WA_StyledBackground, True)  # ✅关键
+            left_l = QVBoxLayout(left)
+            left_l.setContentsMargins(0, 0, 0, 0)
+            left_l.setSpacing(0)
+            root.addWidget(left)
 
-        self.side = QListWidget()
-        self.side.setObjectName("SideMenu")
-        self.side.setFixedWidth(130)
-        self.side.setSpacing(6)
-        left_l.addWidget(self.side, 1)
+            self.side = QListWidget()
+            self.side.setObjectName("SideMenu")
+            self.side.setFixedWidth(130)
+            self.side.setSpacing(6)
+            left_l.addWidget(self.side, 1)
 
-        # ===== 右侧容器 =====
-        right = QWidget()
-        right.setObjectName("RightPane")
-        right.setAttribute(Qt.WA_StyledBackground, True)  # ✅关键
-        right_l = QVBoxLayout(right)
-        right_l.setContentsMargins(12, 12, 12, 12)
-        right_l.setSpacing(12)
-        root.addWidget(right, 1)
+            # ===== 右侧容器 =====
+            right = QWidget()
+            right.setObjectName("RightPane")
+            right.setAttribute(Qt.WA_StyledBackground, True)  # ✅关键
+            right_l = QVBoxLayout(right)
+            right_l.setContentsMargins(12, 12, 12, 12)
+            right_l.setSpacing(12)
+            root.addWidget(right, 1)
 
-        # ===== Top title =====
-        top = QHBoxLayout()
-        self.lbl_title = QLabel("AI工作台")
-        self.lbl_title.setStyleSheet("font-size: 20px; font-weight: 800;")
-        top.addWidget(self.lbl_title)
-        top.addSpacing(10)
-        top.addStretch(1)
+            # ===== Top title =====
+            top = QHBoxLayout()
+            self.lbl_title = QLabel("AI工作台")
+            self.lbl_title.setStyleSheet("font-size: 20px; font-weight: 800;")
+            top.addWidget(self.lbl_title)
+            top.addSpacing(10)
+            top.addStretch(1)
 
-        expire_text = self.expire_time or "未知"
-        self.lbl_expire = QLabel(f"到期时间：{expire_text}")
-        self.lbl_expire.setStyleSheet("color:#FFB020; font-weight:700;")
-        top.addWidget(self.lbl_expire)
-        right_l.addLayout(top)
+            expire_text = self.expire_time or "未知"
+            self.lbl_expire = QLabel(f"到期时间：{expire_text}")
+            self.lbl_expire.setStyleSheet("color:#FFB020; font-weight:700;")
+            top.addWidget(self.lbl_expire)
+            right_l.addLayout(top)
 
-        # ===== Load QSS =====
-        qss_path = self.resource_path(os.path.join("ui", "style.qss"))
-        if os.path.exists(qss_path):
-            with open(qss_path, "r", encoding="utf-8") as f:
-                self.setStyleSheet(f.read())
-        else:
-            print("⚠️ 未找到 style.qss：", qss_path)
+            # ===== Load QSS =====
+            qss_path = self.resource_path(os.path.join("ui", "style.qss"))
+            if os.path.exists(qss_path):
+                with open(qss_path, "r", encoding="utf-8") as f:
+                    self.setStyleSheet(f.read())
+            else:
+                print("⚠️ 未找到 style.qss：", qss_path)
 
-        # ===== Stack pages =====
-        self.stack = QStackedWidget()
-        right_l.addWidget(self.stack, 1)
+            # ===== Stack pages =====
+            self.stack = QStackedWidget()
+            right_l.addWidget(self.stack, 1)
 
-        # ===== Page registry =====
-        self.pages: List[PageSpec] = self._build_page_specs()
+            # ===== Page registry =====
+            self.pages: List[PageSpec] = self._build_page_specs()
 
-        for p in self.pages:
-            item = QListWidgetItem(p.name)
-            item.setTextAlignment(Qt.AlignCenter)
-            self.side.addItem(item)
-            self.stack.addWidget(p.factory())
+            # ✅ 懒加载：idx -> widget
+            self._page_widgets: Dict[int, QWidget] = {}
 
-        self.side.currentRowChanged.connect(self._on_page_changed)
-        self.side.setCurrentRow(0)
+            # ✅ 先塞一个空白页（防止 stack 为空导致 setCurrentWidget 出问题）
+            self._blank = QWidget()
+            self._blank.setObjectName("PageBlank")
+            self.stack.addWidget(self._blank)
+
+            # ✅ 只生成左侧菜单项，不创建页面
+            for p in self.pages:
+                item = QListWidgetItem(p.name)
+                item.setTextAlignment(Qt.AlignCenter)
+                self.side.addItem(item)
+
+            self.side.currentRowChanged.connect(self._on_page_changed)
+
+            # ✅ 只创建第 0 页（避免启动时全页 factory 导致闪）
+            self.side.setCurrentRow(0)
+
+        finally:
+            self.setUpdatesEnabled(True)
+            self.update()
 
     def _build_page_specs(self) -> List[PageSpec]:
         # 延迟 import：避免互相引用/启动慢
@@ -247,18 +269,37 @@ class MainWindow(QWidget):
             PageSpec("AI回复", lambda: AiReplyPage(ctx())),
 
             PageSpec("话术改写", lambda: ScriptRewritePage(ctx())),
-
             PageSpec("评论管理", lambda: CommentManagerPage(ctx())),
-
             PageSpec("公屏轮播", lambda: PublicScreenPage(ctx())),
 
-
             PageSpec("回复弹窗", lambda: PlaceholderPage("回复弹窗（开发中）")),
-
         ]
 
+    def _ensure_page(self, idx: int) -> QWidget:
+        """确保 idx 页已创建；未创建则 factory 一次并缓存。"""
+        if idx in self._page_widgets:
+            return self._page_widgets[idx]
+
+        if not (0 <= idx < len(self.pages)):
+            return self._blank
+
+        try:
+            w = self.pages[idx].factory()
+        except Exception as e:
+            print("⚠️ 页面创建失败：", self.pages[idx].name, e)
+            # 失败也给个占位，避免空白
+            w = QWidget()
+            w.setObjectName(f"PageError_{idx}")
+
+        self._page_widgets[idx] = w
+        self.stack.addWidget(w)
+        return w
+
     def _on_page_changed(self, idx: int):
-        self.stack.setCurrentIndex(idx)
+        # ✅ 懒加载关键：不要 setCurrentIndex(idx)，而是 setCurrentWidget(真实页面)
+        w = self._ensure_page(idx)
+        self.stack.setCurrentWidget(w)
+
         if 0 <= idx < len(self.pages):
             name = self.pages[idx].name
             self.lbl_title.setText(name)

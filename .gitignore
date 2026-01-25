@@ -17,6 +17,8 @@ index-tts-main/
 protected_src/
 wx_user_data/
 
+runtime_state.json
+
 # IDE
 .idea/
 .vscode/
