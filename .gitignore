@@ -11,8 +11,6 @@ venv/
 env/
 
 
-
-
 runtime_state.json
 
 # IDE
@@ -28,8 +26,6 @@ Thumbs.db
 build/
 dist/
 *.spec
-
-
 
 
 # 压缩包
@@ -52,7 +48,7 @@ audio_assets/
 
 zhubo_audio/
 zhuli_audio/
-
+_cython_build/
 
 audio_temp/
 cache/

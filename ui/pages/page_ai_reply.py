@@ -3,14 +3,12 @@ from __future__ import annotations
 
 from typing import Dict, Any, Optional, List, Tuple
 
-from PySide6.QtCore import Qt, QThread, Signal, QObject, QUrl, QSize
+from PySide6.QtCore import QThread, Signal, QObject, QUrl, QSize
 from PySide6.QtGui import QDesktopServices, QFont, QIcon
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
-    QFrame, QComboBox, QMessageBox, QPlainTextEdit, QButtonGroup, QSizePolicy, QStyle,
-    QCheckBox
+    QFrame, QComboBox, QPlainTextEdit, QStyle, QCheckBox, QMessageBox
 )
-
 
 try:
     from core.runtime_state import load_runtime_state, save_runtime_state
@@ -67,7 +65,6 @@ def _normalize_models(cfg_val: Any) -> List[Tuple[str, str, Optional[str]]]:
         return out
 
     if isinstance(cfg_val, dict):
-        # dict{label:id} 不带 icon
         for k, v in cfg_val.items():
             label = str(k).strip()
             mid = str(v).strip()
@@ -120,9 +117,7 @@ class _TestWorker(QObject):
             payload = json.dumps({
                 "model": self.model,
                 "max_tokens": 128,
-                "messages": [
-                    {"role": "user", "content": self.user_text or "你好"},
-                ],
+                "messages": [{"role": "user", "content": self.user_text or "你好"}],
                 "temperature": 1,
                 "stream": False,
                 "group": "default",
@@ -202,7 +197,6 @@ class AiReplyPage(QWidget):
         self.btn_help.setObjectName("HelpBtn")
         self.btn_help.setFixedSize(30, 30)
         self.btn_help.setToolTip("打开说明文档")
-        # 用标准图标替代“？”（更像产品）
         self.btn_help.setIcon(self.style().standardIcon(QStyle.SP_MessageBoxQuestion))
         self.btn_help.setIconSize(QSize(18, 18))
         self.btn_help.clicked.connect(self.open_help_doc)
@@ -286,36 +280,6 @@ class AiReplyPage(QWidget):
 
         root.addWidget(card_key)
 
-        # --- Card: Balance
-        card_bal = QFrame()
-        card_bal.setObjectName("Card")
-        lay_bal = QVBoxLayout(card_bal)
-        lay_bal.setContentsMargins(12, 10, 12, 10)
-        lay_bal.setSpacing(10)
-
-        row_bal_t = QHBoxLayout()
-        lab2 = QLabel("算力余额")
-        lab2.setObjectName("CardTitle")
-        row_bal_t.addWidget(lab2)
-        row_bal_t.addStretch(1)
-
-        self.btn_refresh = QPushButton("刷新")
-        self.btn_refresh.setObjectName("SecondaryBtn")
-        self.btn_refresh.setFixedHeight(34)
-        self.btn_refresh.setIcon(self.style().standardIcon(QStyle.SP_BrowserReload))
-        self.btn_refresh.setIconSize(QSize(16, 16))
-        self.btn_refresh.clicked.connect(self.refresh_balance)
-        row_bal_t.addWidget(self.btn_refresh)
-        lay_bal.addLayout(row_bal_t)
-
-        row_bal = QHBoxLayout()
-        self.lbl_balance = QLabel("—")
-        self.lbl_balance.setStyleSheet("font-size: 18px; font-weight: 800;")
-        row_bal.addWidget(self.lbl_balance)
-        row_bal.addStretch(1)
-        lay_bal.addLayout(row_bal)
-        root.addWidget(card_bal)
-
         # --- Card: Model
         card_model = QFrame()
         card_model.setObjectName("Card")
@@ -350,8 +314,6 @@ class AiReplyPage(QWidget):
         row_sw.addWidget(self.chk_ai_reply, 1)
         lay_m.addLayout(row_sw)
 
-
-        # 这里用“带图标”的下拉（你要的 logo 风格）
         row_model = QHBoxLayout()
         self.cmb_model = QComboBox()
         self.cmb_model.setObjectName("cmb_ai_model")
@@ -367,7 +329,6 @@ class AiReplyPage(QWidget):
 
     def _on_ai_reply_toggle(self, _):
         _rt_set("ai_reply", bool(self.chk_ai_reply.isChecked()))
-
 
     def _apply_local_qss(self):
         self.setStyleSheet(
@@ -409,7 +370,6 @@ class AiReplyPage(QWidget):
 
     def _make_icon(self, model_id: str, icon_hint: Optional[str]) -> QIcon:
         """优先：配置的 icon 路径；其次：config.AI_REPLY_MODEL_ICONS 映射；最后：标准图标兜底"""
-        # 1) item 自带 icon (路径)
         if icon_hint:
             try:
                 ic = QIcon(icon_hint)
@@ -418,7 +378,6 @@ class AiReplyPage(QWidget):
             except Exception:
                 pass
 
-        # 2) 全局映射：AI_REPLY_MODEL_ICONS = {"gpt-5-mini": "xxx.png"}
         icon_map = _cfg_get("AI_REPLY_MODEL_ICONS", "AI_MODEL_ICONS", default=None)
         if isinstance(icon_map, dict):
             p = icon_map.get(model_id) or icon_map.get(model_id.strip())
@@ -430,7 +389,6 @@ class AiReplyPage(QWidget):
                 except Exception:
                     pass
 
-        # 3) fallback：用 Qt 标准 icon（你如果后续提供 logo 文件，就会自动替换成 logo）
         s = self.style()
         mid = model_id.lower()
 
@@ -450,7 +408,6 @@ class AiReplyPage(QWidget):
         for label, mid, icon_hint in items:
             ic = self._make_icon(mid, icon_hint)
             self._model_icons[mid] = ic
-            # 下拉项带图标 + 展示名，userData 存实际 model_id
             self.cmb_model.addItem(ic, label, mid)
 
         self.cmb_model.blockSignals(False)
@@ -481,10 +438,8 @@ class AiReplyPage(QWidget):
             self.chk_ai_reply.setChecked(ai_on)
             self.chk_ai_reply.blockSignals(False)
 
-
         key = str(st.get("ai_api_key", "") or "")
         model_id = str(st.get("ai_model", "") or "")
-        balance = st.get("ai_balance", None)
 
         if key:
             self.edt_key.setText(key)
@@ -492,7 +447,6 @@ class AiReplyPage(QWidget):
         cfg_models = _cfg_get("AI_REPLY_MODELS", "AI_MODELS", "OPENAI_MODELS", default=None)
         items = _normalize_models(cfg_models)
 
-        # 默认：展示名 + model_id（你要给用户看的名字），icon 先用 Qt 标准图标兜底
         if not items:
             items = [
                 ("极速 · gpt-5-mini（推荐）", "gpt-5-mini", None),
@@ -505,21 +459,19 @@ class AiReplyPage(QWidget):
         self._set_model_options(items)
         self._select_model_id(model_id if model_id else items[0][1])
 
-        self.lbl_balance.setText(str(balance) if balance is not None else "—")
-
     # ===================== Helpers =====================
 
     def _info(self, title: str, msg: str):
-        if confirm_dialog:
+        if callable(confirm_dialog):
             confirm_dialog(self, title, msg)
         else:
-            confirm_dialog(self, title, msg)
+            QMessageBox.information(self, title, msg)
 
     def _warn(self, title: str, msg: str):
-        if confirm_dialog:
+        if callable(confirm_dialog):
             confirm_dialog(self, title, msg)
         else:
-            confirm_dialog(self, title, msg)
+            QMessageBox.warning(self, title, msg)
 
     # ===================== Actions =====================
 
@@ -595,17 +547,3 @@ class AiReplyPage(QWidget):
             self._info("测试成功", "请求已成功返回。详情见下方输出。")
         else:
             self._warn("测试失败", "请求未通过。详情见下方输出。")
-
-    def refresh_balance(self):
-        st = _rt_get()
-        bal = st.get("ai_balance", None)
-        if bal is None:
-            demo = _cfg_get("AI_BALANCE_DEMO", default=None)
-            if demo is not None:
-                bal = demo
-        if bal is None:
-            self.lbl_balance.setText("—")
-            self._info("提示", "当前未对接余额接口。\n你可以先正常保存 Key/模型，余额后续接入接口再显示。")
-            return
-        self.lbl_balance.setText(str(bal))
-        self._info("刷新完成", f"当前余额：{bal}")
