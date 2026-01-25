@@ -4,7 +4,7 @@
   "enable_danmaku_reply": true,
   "enable_auto_reply": true,
   "license_key": "ZM-2026-01-15-TEST-0003",
-  "expire_time": "2026-01-26 00:00:00",
+  "expire_time": "2026-01-26",
   "var_pitch_enabled": false,
   "var_pitch_min_sec": 8,
   "follow_like_cooldown_seconds": 60,

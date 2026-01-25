@@ -264,7 +264,6 @@ class MainWindow(QWidget):
             PageSpec("助播设置", lambda: ZhuliPage(ctx())),
             PageSpec("音色模型", lambda: VoiceModelPage(ctx())),
 
-            # ✅ 合并后的页面
             PageSpec("音频目录工具", lambda: AudioDirToolsPage(ctx())),
             PageSpec("AI回复", lambda: AiReplyPage(ctx())),
 
@@ -287,7 +286,6 @@ class MainWindow(QWidget):
             w = self.pages[idx].factory()
         except Exception as e:
             print("⚠️ 页面创建失败：", self.pages[idx].name, e)
-            # 失败也给个占位，避免空白
             w = QWidget()
             w.setObjectName(f"PageError_{idx}")
 
@@ -295,6 +293,25 @@ class MainWindow(QWidget):
         self.stack.addWidget(w)
         return w
 
+    # 在 MainWindow 类里加入这个方法
+    def _call_page_on_show(self, w: QWidget):
+        """
+        切换到页面后回调：
+        - 优先调用 w.on_show()
+        - 兼容：w.panel.on_show()
+        """
+        try:
+            if hasattr(w, "on_show") and callable(getattr(w, "on_show")):
+                w.on_show()
+                return
+            panel = getattr(w, "panel", None)
+            if panel is not None and hasattr(panel, "on_show") and callable(getattr(panel, "on_show")):
+                panel.on_show()
+                return
+        except Exception as e:
+            print("⚠️ on_show 回调异常：", e)
+
+    # 然后把你原来的 _on_page_changed 替换为这个
     def _on_page_changed(self, idx: int):
         # ✅ 懒加载关键：不要 setCurrentIndex(idx)，而是 setCurrentWidget(真实页面)
         w = self._ensure_page(idx)
@@ -304,6 +321,9 @@ class MainWindow(QWidget):
             name = self.pages[idx].name
             self.lbl_title.setText(name)
             self.setWindowTitle(f"织梦AI直播工具 · {name}")
+
+        # ✅ 新增：切到页面后触发 on_show
+        self._call_page_on_show(w)
 
     def jump_to(self, menu_name: str):
         for i, p in enumerate(self.pages):
