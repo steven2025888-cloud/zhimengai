@@ -9,19 +9,6 @@ import sounddevice as sd
 import soundfile as sf
 import numpy as np
 
-GAIN_DB = 3.0
-GAIN = 10 ** (GAIN_DB / 20)
-
-
-def apply_wav_gain(path, data):
-    if path.lower().endswith(".wav"):
-        print("🔊 WAV音频自动提升 +3dB：", path)
-        data = data.astype(np.float32) * GAIN
-        max_val = np.max(np.abs(data))
-        if max_val > 1.0:
-            data = data / max_val
-    return data
-
 
 def play_audio_and_wait(path: str):
     """保持原有行为：一次性播放直到结束。"""

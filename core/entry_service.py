@@ -227,10 +227,21 @@ def run_engine(license_key: str):
         except (TypeError, ValueError):
             return
 
-        router.handle(type_)
+        # ✅ 允许携带 url 等字段
+        if hasattr(router, 'handle_message'):
+            router.handle_message(data)
+        else:
+            router.handle(type_)
 
     ws = WSClient(url=WS_URL, license_key=license_key, on_message=on_ws_message)
+
+    # ✅ 关键：让 UI / Router 都拿得到同一个 ws 实例
+    state.ws_client = ws  # state = app_state
+    app_state.ws_client = ws  # 可写可不写（但写了更稳）
+
     ws.start()
+    # ✅ 让 WSCommandRouter 可以回推状态给手机端
+    state.ws_client = ws
 
     def _pick_reply_text(cfg: dict) -> str:
         arr = cfg.get("reply", []) or []

@@ -1302,6 +1302,16 @@ class AudioDispatcher:
         except Exception:
             pass
 
+
+    def play_next(self):
+        """跳过当前音频，立即播放队列中的下一条（供 WS / 手机端调用）。"""
+        try:
+            # 调用模块级实现（兼容旧代码：也有人 from audio.audio_dispatcher import play_next）
+            return play_next(self)
+        except Exception as e:
+            print("⚠️ play_next 失败：", e)
+            return None
+
 def play_next(self):
     """跳过当前音频，立即播放队列中的下一条（不把当前音频回队列）。"""
     # 这个功能主要用于“在播状态下”点一下直接跳到下一条

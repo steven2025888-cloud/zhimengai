@@ -60,6 +60,7 @@ protected_src/
 wx_user_data/
 other_audio/
 ffmpeg/
+recordings/
 
 # 浏览器数据
 ms-playwright/

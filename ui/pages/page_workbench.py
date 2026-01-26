@@ -5,15 +5,13 @@ import functools
 import time
 import math
 
-
-
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QTextEdit, QPushButton,
     QSplitter, QDialog, QSpinBox, QLineEdit, QGridLayout, QApplication, QFileDialog, QMessageBox
 )
 from ui.dialogs import confirm_dialog
 
-from PySide6.QtCore import Qt, QObject, Signal, QProcess
+from PySide6.QtCore import Qt, QObject, Signal, QProcess, QTimer
 from PySide6.QtGui import QTextCursor
 
 from core.state import app_state
@@ -22,8 +20,6 @@ from config import BASE_URL
 from ui.switch_toggle import SwitchToggle
 import os
 import webbrowser
-
-
 
 print = functools.partial(print, flush=True)
 
@@ -49,7 +45,6 @@ class WorkbenchPage(QWidget):
 
         from audio import voice_reporter
 
-
         # ===== buttons / switches =====
         BTN_H = 38
 
@@ -60,7 +55,6 @@ class WorkbenchPage(QWidget):
 
             b.setMinimumHeight(BTN_H)  # 只限制最小高度
             b.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)  # 允许纵向/横向拉伸填满
-
 
             b.setMinimumWidth(150)
             if primary:
@@ -192,7 +186,6 @@ class WorkbenchPage(QWidget):
         insert_row.addStretch(1)
         log_l.addLayout(insert_row)
 
-
         self.console = QTextEdit()
         self.console.setReadOnly(True)
         log_l.addWidget(self.console, 1)
@@ -223,6 +216,15 @@ class WorkbenchPage(QWidget):
         self.btn_pause_play.clicked.connect(self.toggle_pause_play)
         self.btn_doc.clicked.connect(self.open_doc)
         self.btn_open_folder.clicked.connect(self.open_app_folder)
+
+        # ===== pause/play 状态同步（手机端 ↔ Python端）=====
+        # 说明：WS 指令会改变 dispatcher.paused，但不会自动刷新本页按钮文本；
+        # 所以用一个轻量轮询把按钮状态“跟随真实 paused 状态”。
+        self._pause_state_cache = None
+        self._pause_sync_timer = QTimer(self)
+        self._pause_sync_timer.setInterval(300)
+        self._pause_sync_timer.timeout.connect(self._poll_pause_state)
+        self._pause_sync_timer.start()
 
         self.btn_insert_audio.clicked.connect(self.choose_insert_audio)
         self.btn_urgent_audio.clicked.connect(self.choose_urgent_audio)
@@ -255,7 +257,6 @@ class WorkbenchPage(QWidget):
         title = QLabel("设置点赞/关注触发间隔（分钟）")
         title.setAlignment(Qt.AlignCenter)
         title.setStyleSheet("font-size:14px;font-weight:bold;")
-
 
         spin = QSpinBox()
         spin.setRange(1, 60)  # 最小值强制 5（和报时间隔一致）
@@ -397,7 +398,6 @@ class WorkbenchPage(QWidget):
         QApplication.quit()
         sys.exit(0)
 
-
     # ---------------- UI state styles ----------------
     def _style_start_idle(self):
         # 蓝色启动按钮
@@ -451,6 +451,19 @@ class WorkbenchPage(QWidget):
             QPushButton:hover{ background:#F5A623; }
         """)
 
+    def _poll_pause_state(self):
+        """轮询 dispatcher.paused，用于把按钮文本同步到“真实状态”。"""
+        disp = self._get_audio_dispatcher()
+        if not disp:
+            return
+        try:
+            p = bool(getattr(disp, "paused", False))
+        except Exception:
+            p = False
+        if getattr(self, "_pause_state_cache", None) is None or p != getattr(self, "_pause_state_cache", None):
+            self._pause_state_cache = p
+            self._sync_pause_btn_ui(p)
+
     def _sync_pause_btn_ui(self, paused: bool):
         if paused:
             self.btn_pause_play.setText("▶ 播放")
@@ -476,10 +489,24 @@ class WorkbenchPage(QWidget):
                 return
 
             self._sync_pause_btn_ui(paused)
+
+            # ✅ 与 WSCommandRouter 语义对齐：paused=True -> enabled=False（否则手机端状态会乱）
+            try:
+                app_state.enabled = (not paused)
+            except Exception:
+                pass
+
+            # ✅ 广播给同卡密：让手机端 / 其它端按钮同步
+            try:
+                ws = getattr(app_state, "ws_client", None)
+                if ws and hasattr(ws, "push"):
+                    ws.push("PC", "", 10002 if paused else 10001)
+            except Exception:
+                pass
+
             print("⏸ 已暂停播放" if paused else "▶ 已恢复播放")
         except Exception as e:
             QMessageBox.critical(self, "暂停/播放失败", str(e))
-
 
     def play_next_audio(self):
         """跳过当前正在播放的音频，直接播放队列里的下一条。"""
@@ -502,7 +529,6 @@ class WorkbenchPage(QWidget):
             print("⏭ 已切到下一条音频")
         except Exception as e:
             QMessageBox.critical(self, "下一条失败", str(e))
-
 
     def open_doc(self):
         try:
@@ -570,6 +596,7 @@ class WorkbenchPage(QWidget):
             print("🚨 已急插：", path)
         except Exception as e:
             QMessageBox.critical(self, "急插失败", str(e))
+
     def open_record_urgent_dialog(self):
         disp = self._get_audio_dispatcher()
         if not disp:
@@ -587,6 +614,7 @@ class WorkbenchPage(QWidget):
             - 居中对称绘制 + 轻微辉光
             - AGC 自动增益（平滑），小声也看得见
             """
+
             def __init__(self, parent=None):
                 super().__init__(parent)
                 self._bars = [0.0] * 42  # 柱子数量（越大越密）
@@ -897,7 +925,6 @@ class WorkbenchPage(QWidget):
         h.addWidget(sp)
         return w
 
-
     def _make_var_card(self):
         # 变量调节区域：保留你原逻辑（每段音频随机一个目标值并平滑过渡）
         var_card, var_body = self._make_card("变量调节/音量/语速")
@@ -905,7 +932,6 @@ class WorkbenchPage(QWidget):
         from PySide6.QtWidgets import QCheckBox, QComboBox, QWidget, QVBoxLayout, QHBoxLayout
 
         from PySide6.QtWidgets import QSpinBox
-
 
         def _delta_options(kind: str):
             kind = (kind or "").lower().strip()
@@ -1000,7 +1026,6 @@ class WorkbenchPage(QWidget):
 
             sp_min.valueChanged.connect(_save_min_sec)
 
-
             def _save_enabled(on: bool):
                 setattr(app_state, enabled_attr, bool(on))
                 self.ctx["save_runtime_flag"](enabled_attr, bool(on))
@@ -1016,11 +1041,11 @@ class WorkbenchPage(QWidget):
             return wrap
 
         var_body.addWidget(_make_var_block("变调节", "var_pitch_enabled", "var_pitch_delta", "-5~+5", "pitch",
-                                       "var_pitch_min_sec", 8))
+                                           "var_pitch_min_sec", 8))
         var_body.addWidget(_make_var_block("变音量", "var_volume_enabled", "var_volume_delta", "+0~+10", "volume",
-                                       "var_volume_min_sec", 3))
+                                           "var_volume_min_sec", 3))
         var_body.addWidget(_make_var_block("变语速", "var_speed_enabled", "var_speed_delta", "+0~+10", "speed",
-                                       "var_speed_min_sec", 8))
+                                           "var_speed_min_sec", 8))
 
         # 应用对象（主播/助播）
         targets = QWidget()
@@ -1221,7 +1246,6 @@ class WorkbenchPage(QWidget):
 
         self._main_started = True
         self.btn_start.setEnabled(False)
-
 
         # ✅ 启动后：按钮变绿 + 文案改为“已启动”
         try:

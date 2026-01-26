@@ -8,8 +8,11 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QListWidget, QPushButton,
     QToolButton, QFileDialog, QLineEdit
 )
-from PySide6.QtCore import Qt, QSize, QTimer, Signal
+
 from PySide6.QtGui import QFont, QIcon
+from PySide6.QtWidgets import QListWidget, QListWidgetItem
+from PySide6.QtCore import Qt, QTimer, Signal,QSize
+
 
 from audio.folder_order_manager import FolderOrderManager
 from core.state import app_state
@@ -55,15 +58,8 @@ def _save_runtime_state(state: dict):
         # 最差也别让 UI 崩
         pass
 
+
 class DraggableListWidget(QListWidget):
-    """支持更顺滑的拖动排序：可轻松拖到第一项位置。
-
-    关键点：
-    - 顶部吸附：当 drop 位置非常靠上时，强制插入到第 0 行
-    - 为避免 rowsRemoved/rowsInserted 的中间态被业务逻辑捕捉导致“项消失”，
-      手动移动时会临时 block model 信号，并在操作完成后发出 reorderFinished。
-    """
-
     reorderFinished = Signal()
 
     def __init__(self, *args, **kwargs):
@@ -72,42 +68,13 @@ class DraggableListWidget(QListWidget):
         self.setAcceptDrops(True)
         self.setDropIndicatorShown(True)
         self.setDragDropOverwriteMode(False)
-
-    def _emit_finished_later(self):
-        # 放到事件循环末尾，确保 UI/Model 都稳定了
-        QTimer.singleShot(0, self.reorderFinished.emit)
+        self.setDefaultDropAction(Qt.MoveAction)
 
     def dropEvent(self, event):
-        # Qt6: event.position() -> QPointF；Qt5: event.pos()
-        try:
-            pos = event.position().toPoint()
-        except Exception:
-            pos = event.pos()
-
-        # 顶部吸附：更容易拖到第一项之前
-        if pos.y() <= 10:
-            src_row = self.currentRow()
-            if src_row >= 0:
-                # 手动移动：block model 信号，避免外部在中间态读取到缺项
-                mdl = self.model()
-                bs_m = mdl.blockSignals(True)
-                bs_w = self.blockSignals(True)
-                try:
-                    item = self.takeItem(src_row)
-                    if item is not None:
-                        self.insertItem(0, item)
-                        self.setCurrentRow(0)
-                        event.setDropAction(Qt.MoveAction)
-                        event.accept()
-                        self._emit_finished_later()
-                        return
-                finally:
-                    self.blockSignals(bs_w)
-                    mdl.blockSignals(bs_m)
-
-        # 其他位置交给 Qt 默认 InternalMove 逻辑
+        # ✅ 让 Qt 自己完成 InternalMove（最稳，不会丢文本）
         super().dropEvent(event)
-        self._emit_finished_later()
+        QTimer.singleShot(0, self.reorderFinished.emit)
+
 
 class AnchorFolderOrderPanel(QWidget):
     """
@@ -535,7 +502,9 @@ class AnchorFolderOrderPanel(QWidget):
         self.manager.load()
         self.list.clear()
         for name in getattr(self.manager, "folders", []) or []:
-            self.list.addItem(name)
+            it = QListWidgetItem(name)
+            it.setData(Qt.UserRole, name)  # ✅ uid：文件夹名（通常唯一）
+            self.list.addItem(it)
 
         if set_saved_snapshot:
             self._last_saved_order = self.get_current_order()
