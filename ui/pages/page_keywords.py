@@ -311,15 +311,44 @@ class KeywordPanel(QWidget):
             no_audio = sorted(keyword_prefixes - audio_prefixes)
             no_keyword = sorted(audio_prefixes - keyword_prefixes)
 
+            # ✅ 自动导入新发现的音频前缀
+            imported_count = 0
+            if no_keyword:
+                for prefix in no_keyword:
+                    if prefix not in self.data:
+                        # 创建新的关键词分类
+                        self.data[prefix] = {
+                            "priority": 0,
+                            "must": [],
+                            "any": [],
+                            "deny": [],
+                            "reply": [],
+                            "prefix": prefix
+                        }
+                        self.new_added_prefixes.add(prefix)
+                        imported_count += 1
+
             msg = []
             if no_audio:
-                msg.append("以下分类缺少对应音频：\n" + "、".join(no_audio))
-            if no_keyword:
+                msg.append("❌ 以下分类缺少对应音频：\n" + "、".join(no_audio))
+            
+            if imported_count > 0:
+                msg.append(f"✅ 自动导入 {imported_count} 个新关键词分类：\n" + "、".join(no_keyword))
+            elif no_keyword:
                 msg.append("检测到新音频前缀（关键词未配置）：\n" + "、".join(no_keyword))
+            
             if not msg:
-                msg.append("关键词与音频前缀完全匹配，无需修复。")
+                msg.append("✅ 关键词与音频前缀完全匹配，无需修复。")
 
-            confirm_dialog(self, "检查结果", "\n\n".join(msg))
+            # 显示检查结果
+            confirm_dialog(self, "自动导入检查", "\n\n".join(msg))
+            
+            # 如果有新导入的分类，刷新UI并保存
+            if imported_count > 0:
+                self.refresh_prefix_list()
+                # 自动保存
+                self.save_and_hot_reload()
+                
         except Exception as e:
             confirm_dialog(self, "检查失败", str(e))
 
