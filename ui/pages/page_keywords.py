@@ -123,7 +123,8 @@ class KeywordPanel(QWidget):
         self.new_added_prefixes = set()
 
         root = QVBoxLayout(self)
-        root.setSpacing(10)
+        root.setContentsMargins(14, 14, 14, 14)
+        root.setSpacing(12)
 
         # ===== 顶部栏 =====
         header = QHBoxLayout()
@@ -133,11 +134,11 @@ class KeywordPanel(QWidget):
         header.addWidget(title)
         header.addStretch(1)
 
-        self.btn_export = QPushButton("导出")
-        self.btn_import = QPushButton("导入（合并）")
-        self.btn_check_audio = QPushButton("检查音频")
-        self.btn_open_audio_dir = QPushButton("打开音频目录")
-        self.btn_save = QPushButton("保存并热更新")
+        self.btn_export = QPushButton("📥 导出")
+        self.btn_import = QPushButton("📤 导入（合并）")
+        self.btn_check_audio = QPushButton("🔍 自动导入")
+        self.btn_open_audio_dir = QPushButton("📂 打开音频目录")
+        self.btn_save = QPushButton("💾 保存并热更新")
 
         # 让“保存并热更新”更明显（不依赖 QSS）
         self.btn_save.setFixedHeight(38)
@@ -168,39 +169,141 @@ class KeywordPanel(QWidget):
 
         # ===== 搜索 + 分类操作 =====
         bar = QHBoxLayout()
+        bar.setSpacing(8)
         self.search = QLineEdit()
-        self.search.setPlaceholderText("搜索分类（支持模糊）")
-        self.btn_add_prefix = QPushButton("新建分类")
-        self.btn_rename_prefix = QPushButton("重命名")
-        self.btn_delete_prefix = QPushButton("删除分类")
-        self.btn_delete_all = QPushButton("删除全部")
-
-        for b in (self.btn_add_prefix, self.btn_rename_prefix, self.btn_delete_prefix, self.btn_delete_all):
-            b.setFixedHeight(36)
+        self.search.setPlaceholderText("🔎 搜索分类...")
+        self.search.setFixedHeight(36)
+        self.search.setStyleSheet("""
+            QLineEdit {
+                background: rgba(0,0,0,0.20);
+                border: 1px solid rgba(255,255,255,0.16);
+                border-radius: 8px;
+                padding: 6px 10px;
+                color: rgba(230,238,248,0.95);
+                font-size: 13px;
+            }
+            QLineEdit:focus { border: 1px solid rgba(57,113,249,0.55); }
+        """)
 
         bar.addWidget(self.search, 1)
-        bar.addWidget(self.btn_add_prefix)
-        bar.addWidget(self.btn_rename_prefix)
-        bar.addWidget(self.btn_delete_prefix)
-        bar.addWidget(self.btn_delete_all)
         root.addLayout(bar)
 
         # ===== 主体：左列表 + 右编辑 =====
         body = QHBoxLayout()
-        body.setSpacing(10)
+        body.setSpacing(12)
+
+        # 左侧：分类列表 + 操作按钮
+        left_panel = QVBoxLayout()
+        left_panel.setSpacing(10)
+        
+        left_label = QLabel("分类列表")
+        left_label.setStyleSheet("font-size: 13px; font-weight: 800; color: rgba(230,238,248,0.85);")
+        left_panel.addWidget(left_label)
 
         self.prefix_list = QListWidget()
-        self.prefix_list.setFixedWidth(240)
+        self.prefix_list.setMinimumWidth(200)
+        self.prefix_list.setMaximumWidth(280)
         self.prefix_list.setSelectionMode(QAbstractItemView.SingleSelection)
-
-        body.addWidget(self.prefix_list)
+        self.prefix_list.setStyleSheet("""
+            QListWidget {
+                background: rgba(0,0,0,0.20);
+                border: 1px solid rgba(255,255,255,0.12);
+                border-radius: 8px;
+                outline: 0;
+            }
+            QListWidget::item {
+                padding: 6px 8px;
+                border-radius: 4px;
+            }
+            QListWidget::item:selected {
+                background: rgba(57,113,249,0.65);
+            }
+            QListWidget::item:hover {
+                background: rgba(255,255,255,0.08);
+            }
+        """)
+        left_panel.addWidget(self.prefix_list, 1)
+        
+        # 分类列表下方的操作按钮
+        list_op = QVBoxLayout()
+        list_op.setSpacing(6)
+        
+        btn_row1 = QHBoxLayout()
+        btn_row1.setSpacing(6)
+        self.btn_add_prefix = QPushButton("➕ 新建")
+        self.btn_rename_prefix = QPushButton("✏️ 重命名")
+        self.btn_add_prefix.setFixedHeight(32)
+        self.btn_rename_prefix.setFixedHeight(32)
+        for b in (self.btn_add_prefix, self.btn_rename_prefix):
+            b.setStyleSheet("""
+                QPushButton {
+                    background: rgba(255,255,255,0.06);
+                    border: 1px solid rgba(255,255,255,0.12);
+                    border-radius: 6px;
+                    padding: 4px 8px;
+                    font-weight: 700;
+                    color: rgba(230,238,248,0.92);
+                    font-size: 11px;
+                }
+                QPushButton:hover { background: rgba(255,255,255,0.10); }
+            """)
+        btn_row1.addWidget(self.btn_add_prefix)
+        btn_row1.addWidget(self.btn_rename_prefix)
+        list_op.addLayout(btn_row1)
+        
+        btn_row2 = QHBoxLayout()
+        btn_row2.setSpacing(6)
+        self.btn_delete_prefix = QPushButton("🗑️ 删除")
+        self.btn_delete_all = QPushButton("⚠️ 清空全部")
+        self.btn_delete_prefix.setFixedHeight(32)
+        self.btn_delete_all.setFixedHeight(32)
+        for b in (self.btn_delete_prefix, self.btn_delete_all):
+            b.setStyleSheet("""
+                QPushButton {
+                    background: rgba(255,255,255,0.06);
+                    border: 1px solid rgba(255,255,255,0.12);
+                    border-radius: 6px;
+                    padding: 4px 8px;
+                    font-weight: 700;
+                    color: rgba(230,238,248,0.92);
+                    font-size: 11px;
+                }
+                QPushButton:hover { background: rgba(255,255,255,0.10); }
+            """)
+        btn_row2.addWidget(self.btn_delete_prefix)
+        btn_row2.addWidget(self.btn_delete_all)
+        list_op.addLayout(btn_row2)
+        
+        left_panel.addLayout(list_op)
+        body.addLayout(left_panel)
 
         right = QVBoxLayout()
+        right.setSpacing(10)
+
+        # 当前分类标题
         self.lbl_current = QLabel("当前分类：-")
-        self.lbl_current.setStyleSheet("font-weight:800;")
+        self.lbl_current.setStyleSheet("font-size: 14px; font-weight: 900; color: rgba(230,238,248,0.95);")
         right.addWidget(self.lbl_current)
 
         self.tabs = QTabWidget()
+        self.tabs.setStyleSheet("""
+            QTabWidget::pane { border: 1px solid rgba(255,255,255,0.12); }
+            QTabBar::tab {
+                background: rgba(255,255,255,0.06);
+                border: 1px solid rgba(255,255,255,0.12);
+                padding: 6px 12px;
+                margin-right: 2px;
+                border-radius: 6px 6px 0 0;
+            }
+            QTabBar::tab:selected {
+                background: rgba(57,113,249,0.65);
+                border: 1px solid rgba(57,113,249,0.85);
+            }
+            QTabBar::tab:hover {
+                background: rgba(255,255,255,0.10);
+            }
+        """)
+
         self.must_list = QListWidget()
         self.any_list = QListWidget()
         self.deny_list = QListWidget()
@@ -208,6 +311,23 @@ class KeywordPanel(QWidget):
 
         for lst in (self.must_list, self.any_list, self.deny_list, self.reply_list):
             lst.setSelectionMode(QAbstractItemView.ExtendedSelection)
+            lst.setStyleSheet("""
+                QListWidget {
+                    background: rgba(0,0,0,0.20);
+                    border: none;
+                    outline: 0;
+                }
+                QListWidget::item {
+                    padding: 6px 8px;
+                    border-radius: 4px;
+                }
+                QListWidget::item:selected {
+                    background: rgba(57,113,249,0.65);
+                }
+                QListWidget::item:hover {
+                    background: rgba(255,255,255,0.08);
+                }
+            """)
 
         self.tabs.addTab(self.must_list, "必含词（0）")
         self.tabs.addTab(self.any_list, "意图词（0）")
@@ -218,13 +338,28 @@ class KeywordPanel(QWidget):
 
         # ===== 右侧按钮 =====
         op = QHBoxLayout()
-        self.btn_batch_add = QPushButton("批量添加")
-        self.btn_delete_selected = QPushButton("删除选中")
-        self.btn_clear_tab = QPushButton("清空当前标签")
-        self.btn_open_rule = QPushButton("规则说明")
+        op.setSpacing(8)
+
+        self.btn_batch_add = QPushButton("➕ 批量添加")
+        self.btn_delete_selected = QPushButton("🗑️ 删除选中")
+        self.btn_clear_tab = QPushButton("🧹 清空标签")
+        self.btn_open_rule = QPushButton("❓ 规则说明")
 
         for b in (self.btn_batch_add, self.btn_delete_selected, self.btn_clear_tab, self.btn_open_rule):
-            b.setFixedHeight(36)
+            b.setFixedHeight(34)
+            b.setStyleSheet("""
+                QPushButton {
+                    background: rgba(255,255,255,0.06);
+                    border: 1px solid rgba(255,255,255,0.12);
+                    border-radius: 6px;
+                    padding: 4px 10px;
+                    font-weight: 700;
+                    color: rgba(230,238,248,0.92);
+                    font-size: 12px;
+                }
+                QPushButton:hover { background: rgba(255,255,255,0.10); }
+                QPushButton:pressed { background: rgba(255,255,255,0.14); }
+            """)
 
         op.addWidget(self.btn_batch_add)
         op.addWidget(self.btn_delete_selected)
@@ -316,10 +451,10 @@ class KeywordPanel(QWidget):
             if no_keyword:
                 for prefix in no_keyword:
                     if prefix not in self.data:
-                        # 创建新的关键词分类
+                        # 创建新的关键词分类，默认必含词为标题
                         self.data[prefix] = {
                             "priority": 0,
-                            "must": [],
+                            "must": [prefix],
                             "any": [],
                             "deny": [],
                             "reply": [],
