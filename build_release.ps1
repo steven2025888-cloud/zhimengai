@@ -14,8 +14,21 @@ if (!(Test-Path $VenvPython)) { throw "Cannot find venv python: $VenvPython" }
 $AppNameCN = "AI织梦直播助手"
 $ExeNameCN = "AI织梦直播助手.exe"
 
-# 版本号：你可以改成从某个文件读取（例如 version.txt）
-$AppVersion = "1.0.0"
+# 从 config.py 读取版本号
+Write-Host "== Reading version from config.py =="
+$ConfigPath = Join-Path $ProjectRoot "config.py"
+if (!(Test-Path $ConfigPath)) { throw "Cannot find config.py: $ConfigPath" }
+
+$ConfigContent = Get-Content $ConfigPath -Raw -Encoding UTF8
+if ($ConfigContent -match 'CURRENT_VERSION\s*=\s*"([^"]+)"') {
+    $AppVersion = $Matches[1]
+    Write-Host "Version from config.py: $AppVersion"
+} elseif ($ConfigContent -match "CURRENT_VERSION\s*=\s*'([^']+)'") {
+    $AppVersion = $Matches[1]
+    Write-Host "Version from config.py: $AppVersion"
+} else {
+    throw "Cannot find CURRENT_VERSION in config.py"
+}
 
 $Desktop = [Environment]::GetFolderPath('Desktop')
 $Stamp   = Get-Date -Format "yyyyMMdd_HHmmss"

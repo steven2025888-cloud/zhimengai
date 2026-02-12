@@ -137,7 +137,8 @@ class KeywordPanel(QWidget):
         self.btn_export = QPushButton("📥 导出")
         self.btn_import = QPushButton("📤 导入（合并）")
         self.btn_check_audio = QPushButton("🔍 自动导入")
-        self.btn_open_audio_dir = QPushButton("📂 打开音频目录")
+        self.btn_open_audio_dir = QPushButton("📂 打开关键词目录")
+        self.btn_ai_optimize = QPushButton("🤖 AI优化关键词")
         self.btn_save = QPushButton("💾 保存并热更新")
 
         # 让“保存并热更新”更明显（不依赖 QSS）
@@ -155,13 +156,14 @@ class KeywordPanel(QWidget):
         QPushButton:pressed{ background:#17884F; }
         """)
 
-        for b in (self.btn_export, self.btn_import, self.btn_check_audio, self.btn_open_audio_dir):
+        for b in (self.btn_export, self.btn_import, self.btn_check_audio, self.btn_open_audio_dir, self.btn_ai_optimize):
             b.setFixedHeight(36)
 
         header.addWidget(self.btn_export)
         header.addWidget(self.btn_import)
         header.addWidget(self.btn_check_audio)
         header.addWidget(self.btn_open_audio_dir)
+        header.addWidget(self.btn_ai_optimize)
         header.addSpacing(8)
         header.addWidget(self.btn_save)
 
@@ -390,6 +392,7 @@ class KeywordPanel(QWidget):
         self.btn_save.clicked.connect(self.save_and_hot_reload)
         self.btn_check_audio.clicked.connect(self.check_audio_prefixes)
         self.btn_open_audio_dir.clicked.connect(self.open_audio_dir)
+        self.btn_ai_optimize.clicked.connect(self.ai_optimize_keywords)
 
         # 快捷键：Ctrl+S 保存
         QShortcut(QKeySequence("Ctrl+S"), self, activated=self.save_and_hot_reload)
@@ -740,6 +743,48 @@ class KeywordPanel(QWidget):
         self.refresh_from_disk()
         self.new_added_prefixes.clear()
 
+    def ai_optimize_keywords(self):
+        """AI优化关键词（仅优化当前选中的分类）"""
+        try:
+            # 检查是否选中了分类
+            if not self.current_prefix:
+                confirm_dialog(self, "提示", "请先选择一个分类，然后再进行AI优化")
+                return
+
+            from core.runtime_state import load_runtime_state
+
+            rt = load_runtime_state() or {}
+            api_key = rt.get("ai_api_key", "").strip()
+            model = rt.get("ai_model", "gpt-5-mini").strip()
+
+            if not api_key:
+                confirm_dialog(self, "提示", "请先在【AI回复】页面配置API Key")
+                return
+
+            # 只传递当前选中分类的数据
+            current_category_data = {
+                self.current_prefix: self.data.get(self.current_prefix, {})
+            }
+
+            # 创建AI优化对话框
+            try:
+                from ui.dialogs import AIOptimizeKeywordsDialog
+                dlg = AIOptimizeKeywordsDialog(self, current_category_data, api_key, model)
+                if dlg.exec():
+                    # 用户确认了优化结果
+                    if dlg.optimized_data:
+                        # 只更新当前分类的数据
+                        if self.current_prefix in dlg.optimized_data:
+                            self.data[self.current_prefix] = dlg.optimized_data[self.current_prefix]
+                            self._render_prefix(self.current_prefix)
+                            confirm_dialog(self, "成功", f"分类「{self.current_prefix}」已优化")
+            except Exception as dlg_err:
+                import traceback
+                confirm_dialog(self, "对话框错误", f"创建对话框失败：{str(dlg_err)}\n\n{traceback.format_exc()}")
+        except Exception as e:
+            import traceback
+            confirm_dialog(self, "错误", f"AI优化失败：{str(e)}\n\n{traceback.format_exc()}")
+
 
 class KeywordPage(QWidget):
     """
@@ -761,3 +806,5 @@ class KeywordPage(QWidget):
         super().showEvent(event)
         # ✅页面显示也刷新（双保险）
         self.panel.on_show()
+
+

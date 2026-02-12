@@ -43,6 +43,11 @@ def run_engine(license_key: str):
 
     state.enabled = True
     state.live_ready = True
+    
+    # ✅ 设置 license_key 和 machine_code 到 app_state
+    state.license_key = license_key
+    from core.device import get_machine_code
+    state.machine_code = get_machine_code()
 
     from config import AUDIO_BASE_DIR
     from audio.folder_order_manager import FolderOrderManager

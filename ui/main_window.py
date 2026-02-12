@@ -134,6 +134,11 @@ class MainWindow(QWidget):
         self.license_key = license_key
         self.resource_path = resource_path_func
         self.expire_time = expire_time
+        
+        # ✅ 将 license_key 和 machine_code 设置到 app_state，供所有页面使用
+        app_state.license_key = license_key
+        from core.device import get_machine_code
+        app_state.machine_code = get_machine_code()
 
         self.setWindowTitle("织梦AI直播工具")
         self.setWindowIcon(QIcon(self.resource_path("logo.ico")))
@@ -240,6 +245,8 @@ class MainWindow(QWidget):
         from ui.pages.page_keywords import KeywordPage
         from ui.pages.page_zhuli import ZhuliPage
         from ui.pages.page_voice_model import VoiceModelPage
+        from ui.pages.page_text_to_speech import TextToSpeechPage
+        from ui.pages.page_audio_equalizer import AudioEqualizerPage
         from ui.pages.page_ai_reply import AiReplyPage
         from ui.pages.page_placeholder import PlaceholderPage
 
@@ -263,6 +270,8 @@ class MainWindow(QWidget):
             PageSpec("关键词设置", lambda: KeywordPage(ctx())),
             PageSpec("助播设置", lambda: ZhuliPage(ctx())),
             PageSpec("音色模型", lambda: VoiceModelPage(ctx())),
+            # PageSpec("文本转语音", lambda: TextToSpeechPage(ctx())),
+            PageSpec("音效调节", lambda: AudioEqualizerPage(ctx())),
 
             PageSpec("音频目录工具", lambda: AudioDirToolsPage(ctx())),
             PageSpec("AI回复", lambda: AiReplyPage(ctx())),
@@ -271,7 +280,7 @@ class MainWindow(QWidget):
             PageSpec("评论管理", lambda: CommentManagerPage(ctx())),
             PageSpec("公屏轮播", lambda: PublicScreenPage(ctx())),
 
-            PageSpec("回复弹窗", lambda: PlaceholderPage("回复弹窗（开发中）")),
+            # PageSpec("回复弹窗", lambda: PlaceholderPage("回复弹窗（开发中）")),
         ]
 
     def _ensure_page(self, idx: int) -> QWidget:

@@ -47,6 +47,10 @@ def run():
 
     setup_playwright_env()
 
+    # 抑制 PySide6 的弃用警告
+    import warnings
+    warnings.filterwarnings("ignore", category=DeprecationWarning, module="PySide6")
+
     app = QApplication(sys.argv)
 
     # 启动第一时间强制检查更新

@@ -193,6 +193,10 @@ class PublicScreenPage(QWidget):
         }
         QPushButton#PS_BtnPrimary:hover{ background:#1D4ED8; }
         QPushButton#PS_BtnPrimary:pressed{ background:#1E40AF; }
+        QPushButton#PS_BtnPrimary:disabled{
+            background:#6B7280;
+            color:#D1D5DB;
+        }
 
         QPushButton#PS_BtnGhost{
             background:transparent;
@@ -203,6 +207,11 @@ class PublicScreenPage(QWidget):
             font-weight:800;
         }
         QPushButton#PS_BtnGhost:hover{ border:1px solid #3B82F6; }
+        QPushButton#PS_BtnGhost:disabled{
+            background:transparent;
+            color:#6B7280;
+            border:1px solid #4B5563;
+        }
         """)
 
     def _load(self):
@@ -228,6 +237,10 @@ class PublicScreenPage(QWidget):
         app_state.enable_public_screen_dy = self.chk_dy.isChecked()
         app_state.public_screen_interval_min = self.spn_min.value()
         app_state.public_screen_messages = msgs
+
+    def on_show(self):
+        """页面显示时刷新数据（实时更新）"""
+        self._load()
 
     def _collect(self):
         enabled_wx = self.chk_wx.isChecked()

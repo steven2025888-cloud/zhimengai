@@ -19,8 +19,6 @@ from config import (
     BASE_URL
 )
 
-voice_client = VoiceApiClient(BASE_URL, app_state.license_key)
-
 # ================== 报时间隔持久化配置 ==================
 
 REPORT_INTERVAL_MINUTES = 15  # 默认值

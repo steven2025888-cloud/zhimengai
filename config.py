@@ -18,8 +18,8 @@ FFMPEG_EXE = FFMPEG_DIR / "ffmpeg.exe"
 # ================== 基础配置 ==================
 zhandian = "api.zhimengai.xyz"
 BASE_URL = "https://" + zhandian
-UPDATE_API = BASE_URL + "/api/update/check"
-CURRENT_VERSION = "1.0.6"
+UPDATE_API = BASE_URL + "/api/update/Scheck"
+CURRENT_VERSION = "1.0.9"
 
 WS_URL = "wss://" + zhandian + "/live"
 

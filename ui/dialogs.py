@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, Optional, Tuple, Union
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QThread, Signal, QObject, QTimer
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTextEdit, QLineEdit,
     QSpinBox, QWidget, QSizePolicy
@@ -58,6 +58,10 @@ QPushButton#BtnPrimary {
 }
 QPushButton#BtnPrimary:hover { background: rgba(57,113,249,0.85); }
 QPushButton#BtnPrimary:pressed { background: rgba(57,113,249,0.65); }
+QPushButton#BtnPrimary:disabled {
+    background: #6B7280;
+    color: #D1D5DB;
+}
 
 QPushButton#BtnGhost {
     background: rgba(255,255,255,0.06);
@@ -66,6 +70,11 @@ QPushButton#BtnGhost {
 }
 QPushButton#BtnGhost:hover { background: rgba(255,255,255,0.10); }
 QPushButton#BtnGhost:pressed { background: rgba(255,255,255,0.06); }
+QPushButton#BtnGhost:disabled {
+    background: rgba(255,255,255,0.03);
+    border: 1px solid rgba(255,255,255,0.05);
+    color: #6B7280;
+}
 """
 
 
@@ -322,3 +331,265 @@ def choice_dialog(parent, title: str, text: str, items: List[ChoiceItem]) -> Tup
     dlg = ChoiceDialog(parent, title, text, items)
     dlg.exec()
     return dlg.choice, dlg.ok
+
+
+# ===================== 6) AI优化关键词对话框 =====================
+
+class _AIOptimizeWorker(QObject):
+    """后台AI优化工作线程"""
+    finished = Signal(bool, dict, str)  # success, data, error_msg
+    
+    def __init__(self, keywords_data: dict, api_key: str, model: str, additional_prompt: str = ""):
+        super().__init__()
+        self.keywords_data = keywords_data
+        self.api_key = api_key
+        self.model = model
+        self.additional_prompt = additional_prompt
+    
+    def run(self):
+        """在后台线程中运行"""
+        import json
+        import http.client
+        
+        try:
+            if not self.additional_prompt:
+                # 首次优化：根据必含词生成必含词+意图词
+                keywords_str = json.dumps(self.keywords_data, ensure_ascii=False, indent=2)
+                prompt = f"""请帮我优化以下关键词配置。这是一个直播助手的关键词匹配系统。
+
+重要说明：
+- must（必含词）：用户问题中必须包含的核心词汇（名词、主体）
+- any（意图词）：用户问题中可能出现的修饰词、口语表达、同义词（形容词、动词、疑问词）
+- reply（回复词）：如果原本有才需要生成更多；如果没有就不添加
+
+优化规则：
+1. 拆分复合词：如果必含词是"炉膛多少尺寸"，应该拆分为：
+   - must: ["炉膛", "尺寸"]（核心词）
+   - any: ["多少", "多大", "怎么样", "如何"]（修饰词/疑问词）
+
+2. 对于每个分类的必含词，请：
+   - 提取核心名词作为 must
+   - 提取修饰词、形容词、疑问词作为 any
+   - 生成相关的同义词和口语表达
+
+3. 示例：
+   - 原始: must: ["充电快不快"]
+   - 优化后: must: ["充电"], any: ["快", "不快", "快吗", "快不快", "速度", "效率"]
+
+4. 排除词（deny）可以不要
+
+当前关键词配置：
+{keywords_str}
+
+请返回优化后的完整JSON格式，保持原有结构。"""
+            else:
+                # 继续优化
+                optimized_str = json.dumps(self.keywords_data, ensure_ascii=False, indent=2)
+                prompt = f"""基于用户的优化建议，继续改进关键词配置。
+
+用户建议：{self.additional_prompt}
+
+当前优化后的配置：
+{optimized_str}
+
+请根据用户建议进一步优化，返回完整的JSON格式。记住：
+- must 应该是核心名词
+- any 应该是修饰词、口语表达、同义词"""
+            
+            # 调用AI API
+            conn = http.client.HTTPSConnection("ai.zhimengai.xyz", timeout=30)
+            payload = json.dumps({
+                "model": self.model,
+                "max_tokens": 3000,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.7,
+                "stream": False
+            })
+            headers = {
+                "Accept": "application/json",
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json"
+            }
+            conn.request("POST", "/v1/chat/completions", payload, headers)
+            res = conn.getresponse()
+            data = json.loads(res.read().decode("utf-8"))
+            conn.close()
+            
+            if res.status == 200:
+                # 提取AI返回的内容
+                content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+                
+                # 尝试解析JSON
+                try:
+                    # 查找JSON部分
+                    start = content.find("{")
+                    end = content.rfind("}") + 1
+                    if start >= 0 and end > start:
+                        json_str = content[start:end]
+                        parsed = json.loads(json_str)
+                        
+                        # 验证结构
+                        if isinstance(parsed, dict):
+                            self.finished.emit(True, parsed, "")
+                        else:
+                            self.finished.emit(False, {}, f"AI返回的JSON格式不正确（不是对象）：\n\n{content}")
+                    else:
+                        self.finished.emit(False, {}, f"无法从AI返回内容中提取JSON：\n\n{content}")
+                except json.JSONDecodeError as je:
+                    self.finished.emit(False, {}, f"JSON解析失败：{str(je)}\n\nAI返回内容：\n{content}")
+            else:
+                self.finished.emit(False, {}, f"API错误 ({res.status})：{data}")
+                
+        except Exception as e:
+            import traceback
+            self.finished.emit(False, {}, f"优化失败：{str(e)}\n\n{traceback.format_exc()}")
+
+
+class AIOptimizeKeywordsDialog(BaseDialog):
+    def __init__(self, parent, keywords_data: dict, api_key: str, model: str):
+        super().__init__(parent, title="🤖 AI优化关键词")
+        self.keywords_data = keywords_data
+        self.api_key = api_key
+        self.model = model
+        self.optimized_data = {}
+        self._worker_thread = None
+        self._worker = None
+        
+        # 显示优化结果的文本框
+        self.result_text = QTextEdit()
+        self.result_text.setReadOnly(True)
+        self.result_text.setMinimumHeight(300)
+        self.result_text.setPlaceholderText("正在调用AI优化关键词...")
+        self.body.addWidget(self.result_text)
+        
+        # 继续优化的输入框
+        self.optimize_input = QLineEdit()
+        self.optimize_input.setPlaceholderText("输入优化建议（例如：添加更多同义词、增加回复词等），然后点击【继续优化】")
+        self.optimize_input.setVisible(False)
+        self.body.addWidget(self.optimize_input)
+        
+        # 修改按钮文本
+        self.btn_ok.setText("✅ 确认添加")
+        self.btn_cancel.setText("❌ 取消")
+        
+        # 添加"继续优化"按钮
+        self.btn_continue = QPushButton("🔄 继续优化")
+        self.btn_continue.setObjectName("BtnGhost")
+        self.btn_continue.setVisible(False)
+        self.btn_continue.clicked.connect(self._continue_optimize)
+        
+        # 在footer中插入继续优化按钮（在取消按钮之前）
+        # footer 当前的顺序是: stretch, cancel, ok
+        # 我们要改成: stretch, continue, cancel, ok
+        self.footer.insertWidget(self.footer.count() - 2, self.btn_continue)
+        
+        # 使用QTimer延迟启动AI优化，确保UI完全初始化
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(100, self._call_ai_optimize)
+    
+    def _call_ai_optimize(self, additional_prompt: str = ""):
+        """调用AI优化关键词"""
+        # 停止之前的线程
+        if self._worker_thread and self._worker_thread.isRunning():
+            self._worker_thread.quit()
+            self._worker_thread.wait()
+        
+        # 禁用所有按钮
+        self.btn_ok.setEnabled(False)
+        self.btn_cancel.setEnabled(False)
+        self.btn_continue.setEnabled(False)
+        self.optimize_input.setEnabled(False)
+        
+        # 显示加载状态
+        self.result_text.setText("⏳ 正在优化关键词，请稍候...")
+        
+        # 创建新的工作线程
+        self._worker_thread = QThread()
+        self._worker = _AIOptimizeWorker(self.optimized_data or self.keywords_data, self.api_key, self.model, additional_prompt)
+        self._worker.moveToThread(self._worker_thread)
+        
+        # 连接信号
+        self._worker_thread.started.connect(self._worker.run)
+        self._worker.finished.connect(self._on_optimize_finished)
+        self._worker.finished.connect(self._worker_thread.quit)
+        
+        # 启动线程
+        self._worker_thread.start()
+    
+    def _on_optimize_finished(self, success: bool, data: dict, error_msg: str):
+        """优化完成的回调"""
+        # 恢复按钮状态
+        self.btn_cancel.setEnabled(True)
+        self.optimize_input.setEnabled(True)
+        
+        if success:
+            self.optimized_data = data
+            self._display_result(data)
+        else:
+            self.result_text.setText(f"❌ {error_msg}")
+            self.btn_ok.setEnabled(True)
+    
+    def _display_result(self, data: dict):
+        """显示优化结果"""
+        result_lines = ["✅ AI优化完成！以下是优化后的关键词：\n"]
+        
+        for prefix, cfg in data.items():
+            result_lines.append(f"\n【{prefix}】")
+            must = cfg.get('must', [])
+            any_ = cfg.get('any', [])
+            deny = cfg.get('deny', [])
+            reply = cfg.get('reply', [])
+            
+            result_lines.append(f"  必含词: {', '.join(map(str, must)) if must else '(无)'}")
+            result_lines.append(f"  意图词: {', '.join(map(str, any_)) if any_ else '(无)'}")
+            if deny:
+                result_lines.append(f"  排除词: {', '.join(map(str, deny))}")
+            if reply:
+                result_lines.append(f"  回复词: {'; '.join(map(str, reply))}")
+        
+        result_lines.append("\n\n" + "="*60)
+        result_lines.append("如果满意，点击【✅ 确认添加】")
+        result_lines.append("如需继续优化，输入建议后点击【🔄 继续优化】")
+        
+        self.result_text.setText("\n".join(result_lines))
+        
+        # 启用按钮
+        self.btn_ok.setEnabled(True)
+        self.btn_continue.setEnabled(True)
+        self.optimize_input.setVisible(True)
+        self.btn_continue.setVisible(True)
+    
+    def _continue_optimize(self):
+        """继续优化"""
+        suggestion = self.optimize_input.text().strip()
+        if not suggestion:
+            self.result_text.setText(self.result_text.toPlainText() + "\n❌ 请输入优化建议")
+            return
+        
+        # 清空输入框
+        self.optimize_input.clear()
+        
+        # 禁用按钮
+        self.btn_ok.setEnabled(False)
+        self.btn_continue.setEnabled(False)
+        self.optimize_input.setEnabled(False)
+        
+        # 调用AI继续优化
+        self._call_ai_optimize(suggestion)
+    
+    def _confirm(self):
+        """确认添加"""
+        if self.optimized_data:
+            self._ok = True
+            self.accept()
+        else:
+            self.result_text.setText("❌ 请等待AI优化完成")
+    
+    def closeEvent(self, event):
+        """关闭对话框时清理线程"""
+        if self._worker_thread and self._worker_thread.isRunning():
+            self._worker_thread.quit()
+            self._worker_thread.wait()
+        super().closeEvent(event)
+
+
